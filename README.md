@@ -41,7 +41,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["/path/to/ssh-mcp/dist/index.js"],
+      "args": ["/path/to/ssh/dist/index.js"],
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_PORT": "22",
@@ -60,7 +60,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["/path/to/ssh-mcp/dist/index.js"],
+      "args": ["/path/to/ssh/dist/index.js"],
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_PORT": "22",
@@ -82,7 +82,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["/path/to/ssh-mcp/dist/index.js"]
+      "args": ["/path/to/ssh/dist/index.js"]
     }
   }
 }
@@ -99,7 +99,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["/path/to/ssh-mcp/dist/index.js"],
+      "args": ["/path/to/ssh/dist/index.js"],
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_USERNAME": "root",
@@ -119,7 +119,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["/path/to/ssh-mcp/dist/index.js"],
+      "args": ["/path/to/ssh/dist/index.js"],
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_USERNAME": "root",
@@ -141,7 +141,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["/path/to/ssh-mcp/dist/index.js"],
+      "args": ["/path/to/ssh/dist/index.js"],
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_USERNAME": "root",
@@ -161,7 +161,7 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "npx",
-      "args": ["ssh-mcp"],
+      "args": ["ssh"],
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_USERNAME": "root",
@@ -174,10 +174,10 @@ npm run build
 
 ### 路径说明
 
-配置中的 `/path/to/ssh-mcp/dist/index.js` 需要替换为实际路径：
+配置中的 `/path/to/ssh/dist/index.js` 需要替换为实际路径：
 
-- **Windows**: `C:/Users/yourname/projects/ssh-mcp/dist/index.js`
-- **macOS/Linux**: `/home/yourname/projects/ssh-mcp/dist/index.js`
+- **Windows**: `C:/Users/yourname/projects/ssh/dist/index.js`
+- **macOS/Linux**: `/home/yourname/projects/ssh/dist/index.js`
 
 > 提示：Windows 路径可以使用正斜杠 `/` 或双反斜杠 `\\`
 
