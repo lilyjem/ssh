@@ -4,6 +4,9 @@
   "description": "Local MCP server for SSH remote control",
   "type": "module",
   "main": "dist/index.js",
+  "bin": {
+    "ssh-mcp-server": "dist/index.js"
+  },
   "scripts": {
     "build": "tsc",
     "start": "node dist/index.js",
@@ -14,6 +17,15 @@
   "engines": {
     "node": ">=18"
   },
+  "keywords": [
+    "mcp",
+    "ssh",
+    "remote",
+    "server",
+    "model-context-protocol"
+  ],
+  "author": "",
+  "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.6.1",
     "ssh2": "^1.15.0",
