@@ -19,6 +19,9 @@ test/**/*.d.ts.map
 # 文档和计划（内部开发文档）
 docs/
 
+# 测试文件（本地开发使用）
+test/
+
 # 系统文件
 .DS_Store
 Thumbs.db
