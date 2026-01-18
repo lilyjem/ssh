@@ -16,8 +16,8 @@
 
 ```bash
 # 克隆项目
-git clone <repository-url>
-cd ssh-mcp-server
+git clone https://github.com/YOUR_USERNAME/ssh-test-mcp.git
+cd ssh-test-mcp
 
 # 安装依赖
 npm install
@@ -26,20 +26,24 @@ npm install
 npm run build
 ```
 
-## 在 Cursor 中配置
+## 配置方式
 
-### 方式一：预配置服务器（推荐）
+### 在 Cursor 中配置
 
-在 Cursor 的 MCP 配置文件中添加，通过环境变量预配置服务器信息：
+在 Cursor 设置中找到 MCP 配置（`~/.cursor/mcp.json` 或通过设置界面），添加以下配置：
+
+#### 方式一：预配置服务器（推荐）
+
+通过环境变量预配置服务器信息，启动时自动连接：
 
 ```json
 {
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["E:/cursor/mcp/ssh/dist/index.js"],
+      "args": ["/path/to/ssh-test-mcp/dist/index.js"],
       "env": {
-        "SSH_HOST": "192.168.1.100",
+        "SSH_HOST": "your-server-ip",
         "SSH_PORT": "22",
         "SSH_USERNAME": "root",
         "SSH_PASSWORD": "your-password"
@@ -49,19 +53,19 @@ npm run build
 }
 ```
 
-使用私钥认证：
+使用私钥认证（更安全）：
 
 ```json
 {
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["E:/cursor/mcp/ssh/dist/index.js"],
+      "args": ["/path/to/ssh-test-mcp/dist/index.js"],
       "env": {
-        "SSH_HOST": "192.168.1.100",
+        "SSH_HOST": "your-server-ip",
         "SSH_PORT": "22",
         "SSH_USERNAME": "root",
-        "SSH_PRIVATE_KEY_PATH": "C:/Users/yourname/.ssh/id_rsa",
+        "SSH_PRIVATE_KEY_PATH": "~/.ssh/id_rsa",
         "SSH_PASSPHRASE": "optional-passphrase"
       }
     }
@@ -69,7 +73,7 @@ npm run build
 }
 ```
 
-### 方式二：手动连接
+#### 方式二：手动连接
 
 不配置环境变量，使用时通过 `ssh_connect` 工具手动连接：
 
@@ -78,11 +82,104 @@ npm run build
   "mcpServers": {
     "ssh": {
       "command": "node",
-      "args": ["E:/cursor/mcp/ssh/dist/index.js"]
+      "args": ["/path/to/ssh-test-mcp/dist/index.js"]
     }
   }
 }
 ```
+
+### 在 Claude Desktop 中配置
+
+编辑 Claude Desktop 配置文件：
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "node",
+      "args": ["/path/to/ssh-test-mcp/dist/index.js"],
+      "env": {
+        "SSH_HOST": "your-server-ip",
+        "SSH_USERNAME": "root",
+        "SSH_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### 在 Claude Code (VS Code 扩展) 中配置
+
+在项目根目录创建 `.mcp.json` 文件：
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "node",
+      "args": ["/path/to/ssh-test-mcp/dist/index.js"],
+      "env": {
+        "SSH_HOST": "your-server-ip",
+        "SSH_USERNAME": "root",
+        "SSH_PRIVATE_KEY_PATH": "~/.ssh/id_rsa"
+      }
+    }
+  }
+}
+```
+
+或者在 VS Code 设置中配置全局 MCP 服务器。
+
+### 在 Codex CLI 中配置
+
+编辑 Codex 配置文件 `~/.codex/config.json`：
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "node",
+      "args": ["/path/to/ssh-test-mcp/dist/index.js"],
+      "env": {
+        "SSH_HOST": "your-server-ip",
+        "SSH_USERNAME": "root",
+        "SSH_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### 使用 npx 运行（无需克隆）
+
+如果项目已发布到 npm，可以直接使用 npx：
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "npx",
+      "args": ["ssh-test-mcp"],
+      "env": {
+        "SSH_HOST": "your-server-ip",
+        "SSH_USERNAME": "root",
+        "SSH_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+### 路径说明
+
+配置中的 `/path/to/ssh-test-mcp/dist/index.js` 需要替换为实际路径：
+
+- **Windows**: `C:/Users/yourname/projects/ssh-test-mcp/dist/index.js`
+- **macOS/Linux**: `/home/yourname/projects/ssh-test-mcp/dist/index.js`
+
+> 提示：Windows 路径可以使用正斜杠 `/` 或双反斜杠 `\\`
 
 ## 环境变量
 
@@ -107,8 +204,21 @@ npm run build
 #### ssh_connect
 创建新的 SSH 连接（预配置服务器时可选）。
 
+**参数：**
+- `host` (string, 必填): 服务器地址
+- `port` (number, 可选): SSH 端口，默认 22
+- `username` (string, 必填): 用户名
+- `password` (string, 可选): 密码
+- `privateKey` (string, 可选): 私钥内容
+- `passphrase` (string, 可选): 私钥密码
+
 #### ssh_exec
 执行远程命令。预配置服务器时无需提供 `session_id`。
+
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `command` (string, 必填): 要执行的命令
+- `timeout` (number, 可选): 超时时间（毫秒）
 
 ```
 示例：ssh_exec(command="ls -la /var/log")
@@ -120,10 +230,17 @@ npm run build
 #### ssh_disconnect
 断开 SSH 连接。
 
+**参数：**
+- `session_id` (string, 必填): 要断开的会话 ID
+
 ### SFTP 文件操作
 
 #### sftp_list
 列出远程目录内容。
+
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `path` (string, 可选): 目录路径，默认 `/`
 
 ```
 示例：sftp_list(path="/home/user")
@@ -132,19 +249,34 @@ npm run build
 #### sftp_upload
 上传本地文件到远程服务器。
 
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `local_path` (string, 必填): 本地文件路径
+- `remote_path` (string, 必填): 远程目标路径
+
 ```
-示例：sftp_upload(local_path="C:/file.txt", remote_path="/home/user/file.txt")
+示例：sftp_upload(local_path="/local/file.txt", remote_path="/home/user/file.txt")
 ```
 
 #### sftp_download
 从远程服务器下载文件到本地。
 
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `remote_path` (string, 必填): 远程文件路径
+- `local_path` (string, 必填): 本地目标路径
+
 ```
-示例：sftp_download(remote_path="/var/log/syslog", local_path="C:/logs/syslog.txt")
+示例：sftp_download(remote_path="/var/log/syslog", local_path="/local/logs/syslog.txt")
 ```
 
 #### sftp_read
 读取远程文件内容（适用于文本文件）。
+
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `path` (string, 必填): 远程文件路径
+- `encoding` (string, 可选): 编码，默认 `utf-8`
 
 ```
 示例：sftp_read(path="/etc/nginx/nginx.conf")
@@ -153,12 +285,21 @@ npm run build
 #### sftp_write
 写入内容到远程文件。
 
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `path` (string, 必填): 远程文件路径
+- `content` (string, 必填): 要写入的内容
+
 ```
 示例：sftp_write(path="/home/user/test.txt", content="Hello World")
 ```
 
 #### sftp_delete
 删除远程文件或空目录。
+
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `path` (string, 必填): 要删除的路径
 
 ```
 示例：sftp_delete(path="/home/user/old-file.txt")
@@ -167,12 +308,21 @@ npm run build
 #### sftp_mkdir
 创建远程目录。
 
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `path` (string, 必填): 目录路径
+
 ```
 示例：sftp_mkdir(path="/home/user/new-folder")
 ```
 
 #### sftp_rename
 重命名或移动远程文件/目录。
+
+**参数：**
+- `session_id` (string, 可选): 会话 ID
+- `old_path` (string, 必填): 原路径
+- `new_path` (string, 必填): 新路径
 
 ```
 示例：sftp_rename(old_path="/home/user/old.txt", new_path="/home/user/new.txt")
@@ -195,7 +345,7 @@ AI：调用 sftp_read(path="/etc/nginx/nginx.conf")
 AI：调用 ssh_exec(command="systemctl restart nginx")
 
 用户：上传本地的配置文件到服务器
-AI：调用 sftp_upload(local_path="C:/config/app.conf", remote_path="/etc/app/app.conf")
+AI：调用 sftp_upload(local_path="/local/config/app.conf", remote_path="/etc/app/app.conf")
 ```
 
 ### 手动连接模式
@@ -238,6 +388,7 @@ npm run build
 4. **命令限制**：命令长度限制为 1000 字符，避免滥用
 5. **输出限制**：输出超过 25000 字符会被截断
 6. **环境变量**：建议使用私钥认证而非密码，更安全
+7. **配置文件安全**：不要将包含密码的配置文件提交到版本控制
 
 ## 技术栈
 
