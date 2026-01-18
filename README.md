@@ -1,5 +1,7 @@
 # SSH MCP Server
 
+[English](README_EN.md)
+
 本项目提供一个本地运行的 MCP (Model Context Protocol) 服务，通过 SSH 安全地远程操控服务器，支持命令执行和文件传输（SFTP）。
 
 ## 功能特性
