@@ -16,8 +16,8 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/YOUR_USERNAME/ssh-test-mcp.git
-cd ssh-test-mcp
+git clone https://github.com/lilyjem/ssh.git
+cd ssh
 
 # 安装依赖
 npm install
