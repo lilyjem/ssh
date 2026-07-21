@@ -35,6 +35,10 @@ export class SshClient {
   private client: Client;
   private config: SshClientConfig;
   private connected: boolean = false;
+  // 断连回调列表
+  private disconnectCallbacks: Array<() => void> = [];
+  // 标记是否曾成功连接过
+  private hasConnectedBefore: boolean = false;
 
   constructor(config: SshClientConfig) {
     this.config = config;
@@ -51,6 +55,8 @@ export class SshClient {
 
       // 设置连接超时定时器
       const timeoutId = setTimeout(() => {
+        // 防止 end() 触发未捕获的 error 事件
+        this.client.on("error", () => {});
         this.client.end();
         reject(new Error(`Connection timeout after ${connectTimeout}ms`));
       }, connectTimeout);
@@ -97,6 +103,7 @@ export class SshClient {
       this.client.once("ready", () => {
         clearTimeout(timeoutId);
         this.connected = true;
+        this.hasConnectedBefore = true;
         resolve();
       });
 
@@ -107,9 +114,15 @@ export class SshClient {
         reject(new Error(`SSH connection error: ${err.message}`));
       });
 
-      // 监听关闭事件
-      this.client.once("close", () => {
+      // 监听关闭事件，触发断连回调
+      this.client.on("close", () => {
+        const wasConnected = this.connected;
         this.connected = false;
+        if (wasConnected) {
+          for (const cb of this.disconnectCallbacks) {
+            try { cb(); } catch { /* 忽略回调中的错误 */ }
+          }
+        }
       });
 
       // 发起连接
@@ -222,6 +235,48 @@ export class SshClient {
       keepaliveCountMax: this.config.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT_MAX,
       readyTimeout: this.config.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT,
     };
+  }
+
+  /**
+   * 获取存储的连接配置（用于重连决策）
+   */
+  getConfig(): SshClientConfig {
+    return { ...this.config };
+  }
+
+  /**
+   * 检查连接是否存活
+   * 基于内部状态标志判断，不发送网络探测
+   */
+  isAlive(): boolean {
+    return this.connected;
+  }
+
+  /**
+   * 注册断连回调，在连接意外断开时触发
+   */
+  onDisconnect(callback: () => void): void {
+    this.disconnectCallbacks.push(callback);
+  }
+
+  /**
+   * 重新连接：关闭旧连接，创建新的 ssh2 Client，使用存储的配置重连
+   */
+  async reconnect(): Promise<void> {
+    // 强制关闭旧连接（忽略错误）
+    try {
+      this.client.on("error", () => {});
+      this.client.end();
+    } catch {
+      // 忽略关闭错误
+    }
+    this.connected = false;
+
+    // 创建全新的 ssh2 Client 实例
+    this.client = new Client();
+
+    // 使用存储的配置重新连接
+    await this.connect();
   }
 
   /**
