@@ -21,6 +21,9 @@ export interface GlobalConfig {
   connectTimeout?: number;
   keepaliveInterval?: number;
   keepaliveCountMax?: number;
+  maxReconnectAttempts?: number;
+  reconnectBaseDelay?: number;
+  reconnectMaxDelay?: number;
 }
 
 /**
@@ -94,6 +97,18 @@ export function loadConfigFromEnv(): GlobalConfig {
 
   if (process.env.SSH_KEEPALIVE_COUNT) {
     config.keepaliveCountMax = parseInt(process.env.SSH_KEEPALIVE_COUNT, 10);
+  }
+
+  if (process.env.SSH_MAX_RECONNECT_ATTEMPTS) {
+    config.maxReconnectAttempts = parseInt(process.env.SSH_MAX_RECONNECT_ATTEMPTS, 10);
+  }
+
+  if (process.env.SSH_RECONNECT_BASE_DELAY) {
+    config.reconnectBaseDelay = parseInt(process.env.SSH_RECONNECT_BASE_DELAY, 10);
+  }
+
+  if (process.env.SSH_RECONNECT_MAX_DELAY) {
+    config.reconnectMaxDelay = parseInt(process.env.SSH_RECONNECT_MAX_DELAY, 10);
   }
 
   return config;

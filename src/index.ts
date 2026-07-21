@@ -39,6 +39,8 @@ server.tool(
     passphrase: z.string().optional().describe("Passphrase for encrypted private key"),
     timeout: z.number().int().min(1000).max(300000).optional().describe("Command execution timeout in ms (default: 30000)"),
     connect_timeout: z.number().int().min(1000).max(60000).optional().describe("Connection timeout in ms (default: 10000)"),
+    keepalive_interval: z.number().int().min(0).optional().describe("Keepalive interval in ms (default: 10000, 0 to disable)"),
+    keepalive_count: z.number().int().min(1).optional().describe("Max keepalive failures before disconnect (default: 3)"),
   },
   async (params) => {
     try {
