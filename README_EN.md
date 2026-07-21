@@ -13,6 +13,10 @@ A locally running MCP (Model Context Protocol) server that securely controls rem
 - **Auto Connect**: Pre-configure server via environment variables for automatic connection on startup
 - **Session Management**: Support multiple concurrent sessions, list and disconnect sessions
 - **Timeout Control**: Configurable timeouts for connection and command execution
+- **Connection Keepalive**: Built-in SSH keepalive mechanism to prevent idle connections from being dropped by firewalls/NAT
+- **Auto Reconnect**: Transparent reconnection on unexpected disconnects with automatic SFTP session recovery
+- **Retry Mechanism**: Automatic exponential backoff retry on operation failures with random jitter to avoid thundering herd
+- **Path Compatibility**: Auto-expands `~` paths (e.g. `~/.ssh/id_rsa`) for common configuration patterns
 
 ## Installation
 
@@ -192,10 +196,15 @@ Replace `/path/to/ssh/dist/index.js` with actual path:
 | SSH_USERNAME | Yes | Username |
 | SSH_PASSWORD | No* | Password authentication |
 | SSH_PRIVATE_KEY | No* | Private key content (Base64 encoded) |
-| SSH_PRIVATE_KEY_PATH | No* | Private key file path |
+| SSH_PRIVATE_KEY_PATH | No* | Private key file path (supports `~` expansion) |
 | SSH_PASSPHRASE | No | Private key passphrase |
 | SSH_TIMEOUT | No | Command timeout (ms), default 30000 |
 | SSH_CONNECT_TIMEOUT | No | Connection timeout (ms), default 10000 |
+| SSH_KEEPALIVE_INTERVAL | No | Keepalive probe interval (ms), default 10000. Set to 0 to disable |
+| SSH_KEEPALIVE_COUNT | No | Max unresponsive keepalive probes before declaring connection dead, default 3 |
+| SSH_MAX_RECONNECT_ATTEMPTS | No | Max auto-reconnect attempts, default 3 |
+| SSH_RECONNECT_BASE_DELAY | No | Reconnect base delay (ms), default 1000 |
+| SSH_RECONNECT_MAX_DELAY | No | Reconnect max delay cap (ms), default 10000 |
 
 > *Note: At least one of password, private key content, or private key path is required
 
@@ -213,6 +222,8 @@ Create a new SSH connection (optional when using pre-configured server).
 - `password` (string, optional): Password
 - `privateKey` (string, optional): Private key content
 - `passphrase` (string, optional): Private key passphrase
+- `keepalive_interval` (number, optional): Keepalive probe interval (ms), default 10000
+- `keepalive_count` (number, optional): Max unresponsive probes, default 3
 
 #### ssh_exec
 Execute remote command. No `session_id` needed when using pre-configured server.
@@ -389,6 +400,31 @@ npm run build
 | File Read | 25000 chars | `sftp_read` truncates text file content |
 | Command Length | 1000 chars | `ssh_exec` max command string length |
 | Command Output | 25000 chars | Output exceeding limit is truncated |
+
+## Connection Reliability
+
+SSH MCP Server includes a comprehensive connection keepalive and auto-recovery mechanism for long-running stability:
+
+### Keepalive
+
+- Sends a keepalive probe to the server every **10 seconds** by default
+- Declares connection dead after **3** consecutive unresponsive probes
+- Effectively prevents firewalls/NAT devices from dropping idle connections
+- Customizable via `SSH_KEEPALIVE_INTERVAL` and `SSH_KEEPALIVE_COUNT`
+
+### Auto Reconnect
+
+- Automatically triggers reconnection when a disconnection is detected
+- Completely transparent to the caller — no manual handling required
+- SFTP sessions are automatically recovered after reconnection
+
+### Exponential Backoff Retry
+
+- Automatically retries failed operations, up to **3 attempts** (including the initial try)
+- Wait time between retries grows exponentially: `baseDelay × 2^attempt`
+- Adds ±25% random jitter to prevent thundering herd from concurrent clients
+- Only retries on connection-related errors; authentication failures are thrown immediately
+- Customizable via `SSH_MAX_RECONNECT_ATTEMPTS`, `SSH_RECONNECT_BASE_DELAY`, `SSH_RECONNECT_MAX_DELAY`
 
 ## Security Notes
 

@@ -13,6 +13,10 @@
 - **自动连接**：支持通过环境变量预配置服务器，启动时自动连接
 - **会话管理**：支持多会话并发，可列出和断开会话
 - **超时控制**：连接和命令执行都支持超时设置
+- **连接保活**：内置 SSH Keepalive 机制，防止空闲连接被防火墙/NAT 设备断开
+- **自动重连**：连接意外断开时透明重连，SFTP 会话自动恢复，业务操作无感知
+- **重试机制**：操作失败时自动按指数退避策略重试，含随机抖动避免雪崩
+- **路径兼容**：自动展开 `~` 路径（如 `~/.ssh/id_rsa`），兼容常见配置写法
 
 ## 安装
 
@@ -192,10 +196,15 @@ npm run build
 | SSH_USERNAME | 是 | 用户名 |
 | SSH_PASSWORD | 否* | 密码认证 |
 | SSH_PRIVATE_KEY | 否* | 私钥内容（Base64 编码） |
-| SSH_PRIVATE_KEY_PATH | 否* | 私钥文件路径 |
+| SSH_PRIVATE_KEY_PATH | 否* | 私钥文件路径（支持 `~` 展开） |
 | SSH_PASSPHRASE | 否 | 私钥密码 |
 | SSH_TIMEOUT | 否 | 命令执行超时（毫秒），默认 30000 |
 | SSH_CONNECT_TIMEOUT | 否 | 连接超时（毫秒），默认 10000 |
+| SSH_KEEPALIVE_INTERVAL | 否 | Keepalive 探测间隔（毫秒），默认 10000。设为 0 可禁用 |
+| SSH_KEEPALIVE_COUNT | 否 | Keepalive 最大无响应次数，超过后判定连接死亡，默认 3 |
+| SSH_MAX_RECONNECT_ATTEMPTS | 否 | 自动重连最大尝试次数，默认 3 |
+| SSH_RECONNECT_BASE_DELAY | 否 | 重连基础延迟（毫秒），默认 1000 |
+| SSH_RECONNECT_MAX_DELAY | 否 | 重连最大延迟上限（毫秒），默认 10000 |
 
 > *注：密码、私钥内容、私钥路径三者至少提供一个
 
@@ -213,6 +222,8 @@ npm run build
 - `password` (string, 可选): 密码
 - `privateKey` (string, 可选): 私钥内容
 - `passphrase` (string, 可选): 私钥密码
+- `keepalive_interval` (number, 可选): Keepalive 探测间隔（毫秒），默认 10000
+- `keepalive_count` (number, 可选): 最大无响应次数，默认 3
 
 #### ssh_exec
 执行远程命令。预配置服务器时无需提供 `session_id`。
@@ -389,6 +400,31 @@ npm run build
 | 文件读取 | 25000 字符 | `sftp_read` 读取文本文件内容时会截断 |
 | 命令长度 | 1000 字符 | `ssh_exec` 命令字符串最大长度 |
 | 命令输出 | 25000 字符 | 超过会被截断 |
+
+## 连接可靠性
+
+SSH MCP Server 内置了一套完整的连接保活与自动恢复机制，确保长时间使用的稳定性：
+
+### Keepalive 保活
+
+- 默认每 **10 秒** 向服务器发送一次 keepalive 探测包
+- 连续 **3 次** 无响应后判定连接死亡
+- 有效防止防火墙/NAT 设备因空闲超时而断开连接
+- 可通过 `SSH_KEEPALIVE_INTERVAL` 和 `SSH_KEEPALIVE_COUNT` 自定义
+
+### 自动重连
+
+- 当检测到连接断开时，操作会自动触发重连
+- 重连对调用方完全透明，无需手动处理
+- SFTP 会话在重连后自动恢复，无需重新初始化
+
+### 指数退避重试
+
+- 操作失败时自动重试，最多 **3 次**（含首次尝试）
+- 每次重试的等待时间按指数增长：`baseDelay × 2^attempt`
+- 加入 ±25% 随机抖动，避免多客户端同时重试造成雪崩
+- 仅对连接类错误重试，认证失败等错误立即抛出
+- 可通过 `SSH_MAX_RECONNECT_ATTEMPTS`、`SSH_RECONNECT_BASE_DELAY`、`SSH_RECONNECT_MAX_DELAY` 自定义
 
 ## 安全注意事项
 
