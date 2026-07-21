@@ -2,6 +2,7 @@ import type { Client, SFTPWrapper } from "ssh2";
 import { createReadStream, createWriteStream, statSync } from "fs";
 import { basename, dirname } from "path";
 import { CHARACTER_LIMIT } from "../constants.js";
+import { expandHomePath } from "../utils/path.js";
 
 // 文件信息接口
 export interface FileInfo {
@@ -176,18 +177,20 @@ export class SftpClient {
    */
   async uploadFile(localPath: string, remotePath: string): Promise<UploadResult> {
     const sftp = this.ensureSftp();
+    // 本地路径可能来自 Cursor 工具参数，兼容 `~/Downloads/file.txt` 这类 macOS 常用写法。
+    const expandedLocalPath = expandHomePath(localPath);
 
     // 获取本地文件大小
     let fileSize: number;
     try {
-      const stats = statSync(localPath);
+      const stats = statSync(expandedLocalPath);
       fileSize = stats.size;
     } catch (err) {
       throw new Error(`Local file not found: ${localPath}`);
     }
 
     return new Promise((resolve, reject) => {
-      const readStream = createReadStream(localPath);
+      const readStream = createReadStream(expandedLocalPath);
       const writeStream = sftp.createWriteStream(remotePath);
 
       writeStream.on("close", () => {
@@ -219,13 +222,15 @@ export class SftpClient {
    */
   async downloadFile(remotePath: string, localPath: string): Promise<DownloadResult> {
     const sftp = this.ensureSftp();
+    // 下载目标是本机路径，同样需要兼容 `~/...`。
+    const expandedLocalPath = expandHomePath(localPath);
 
     // 先获取远程文件信息
     const stats = await this.stat(remotePath);
 
     return new Promise((resolve, reject) => {
       const readStream = sftp.createReadStream(remotePath);
-      const writeStream = createWriteStream(localPath);
+      const writeStream = createWriteStream(expandedLocalPath);
 
       writeStream.on("close", () => {
         resolve({

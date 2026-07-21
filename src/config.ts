@@ -19,6 +19,8 @@ export interface GlobalConfig {
   server?: ServerConfig;
   timeout?: number;
   connectTimeout?: number;
+  keepaliveInterval?: number;
+  keepaliveCountMax?: number;
 }
 
 /**
@@ -84,6 +86,14 @@ export function loadConfigFromEnv(): GlobalConfig {
 
   if (process.env.SSH_CONNECT_TIMEOUT) {
     config.connectTimeout = parseInt(process.env.SSH_CONNECT_TIMEOUT, 10);
+  }
+
+  if (process.env.SSH_KEEPALIVE_INTERVAL) {
+    config.keepaliveInterval = parseInt(process.env.SSH_KEEPALIVE_INTERVAL, 10);
+  }
+
+  if (process.env.SSH_KEEPALIVE_COUNT) {
+    config.keepaliveCountMax = parseInt(process.env.SSH_KEEPALIVE_COUNT, 10);
   }
 
   return config;

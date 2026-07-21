@@ -1,7 +1,12 @@
 import { Client, type ConnectConfig } from "ssh2";
 import { readFileSync } from "fs";
 import type { ExecResult } from "../types.js";
-import { CHARACTER_LIMIT } from "../constants.js";
+import {
+  CHARACTER_LIMIT,
+  DEFAULT_KEEPALIVE_INTERVAL,
+  DEFAULT_KEEPALIVE_COUNT_MAX,
+} from "../constants.js";
+import { expandHomePath } from "../utils/path.js";
 
 // SSH 客户端配置
 export interface SshClientConfig {
@@ -14,6 +19,8 @@ export interface SshClientConfig {
   passphrase?: string;
   timeout?: number; // 命令执行超时时间（毫秒），默认 30 秒
   connectTimeout?: number; // 连接超时时间（毫秒），默认 10 秒
+  keepaliveInterval?: number; // keepalive 探测间隔（毫秒），0 表示禁用
+  keepaliveCountMax?: number; // 最大无响应次数
 }
 
 // 默认超时时间
@@ -56,6 +63,11 @@ export class SshClient {
         readyTimeout: connectTimeout,
       };
 
+      // 设置 keepalive，防止空闲连接被中间设备断开
+      const keepaliveInterval = this.config.keepaliveInterval ?? DEFAULT_KEEPALIVE_INTERVAL;
+      connectConfig.keepaliveInterval = keepaliveInterval;
+      connectConfig.keepaliveCountMax = this.config.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT_MAX;
+
       // 设置认证方式
       if (this.config.password) {
         connectConfig.password = this.config.password;
@@ -68,7 +80,9 @@ export class SshClient {
         }
       } else if (this.config.privateKeyPath) {
         try {
-          connectConfig.privateKey = readFileSync(this.config.privateKeyPath);
+          // Node.js 不会自动展开 `~`，这里兼容 README 和 Cursor 配置中的常见写法。
+          const privateKeyPath = expandHomePath(this.config.privateKeyPath);
+          connectConfig.privateKey = readFileSync(privateKeyPath);
           if (this.config.passphrase) {
             connectConfig.passphrase = this.config.passphrase;
           }
@@ -192,6 +206,22 @@ export class SshClient {
         });
       });
     });
+  }
+
+  /**
+   * 获取将要传给 ssh2 的连接配置（用于测试和调试）
+   * 不包含敏感信息（密码/私钥）
+   */
+  getConnectConfig(): Record<string, unknown> {
+    const keepaliveInterval = this.config.keepaliveInterval ?? DEFAULT_KEEPALIVE_INTERVAL;
+    return {
+      host: this.config.host,
+      port: this.config.port,
+      username: this.config.username,
+      keepaliveInterval,
+      keepaliveCountMax: this.config.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT_MAX,
+      readyTimeout: this.config.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT,
+    };
   }
 
   /**
