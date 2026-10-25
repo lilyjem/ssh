@@ -22,7 +22,7 @@ A locally running MCP (Model Context Protocol) server that securely controls rem
 
 ```bash
 # Clone the project
-git clone https://github.com/lilyjem/ssh.git
+git clone https://github.com/your-name/ssh.git
 cd ssh
 
 # Install dependencies

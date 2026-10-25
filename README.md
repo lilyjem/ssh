@@ -22,7 +22,7 @@
 
 ```bash
 # 克隆项目
-git clone https://github.com/lilyjem/ssh.git
+git clone https://github.com/your-name/ssh.git
 cd ssh
 
 # 安装依赖
