@@ -205,6 +205,10 @@ npm run build
 | SSH_MAX_RECONNECT_ATTEMPTS | 否 | 自动重连最大尝试次数，默认 3 |
 | SSH_RECONNECT_BASE_DELAY | 否 | 重连基础延迟（毫秒），默认 1000 |
 | SSH_RECONNECT_MAX_DELAY | 否 | 重连最大延迟上限（毫秒），默认 10000 |
+| SSH_STRICT_HOST_KEY_CHECKING | 否 | `yes`、`accept-new`、`no`。默认 `accept-new`：第一次见到主机时写入 known_hosts，密钥变化则拒绝连接 |
+| SSH_KNOWN_HOSTS | 否 | known_hosts 文件路径，默认 `~/.ssh/known_hosts` |
+| SSH_HOST_FINGERPRINT | 否 | 固定的 `SHA256:...` 主机指纹，不匹配则拒绝连接 |
+| SSH_SFTP_TIMEOUT | 否 | SFTP 无进展超时（毫秒），默认 30000 |
 
 > *注：密码、私钥内容、私钥路径三者至少提供一个
 
@@ -220,10 +224,16 @@ npm run build
 - `port` (number, 可选): SSH 端口，默认 22
 - `username` (string, 必填): 用户名
 - `password` (string, 可选): 密码
-- `privateKey` (string, 可选): 私钥内容
+- `private_key` (string, 可选): 私钥内容
+- `private_key_path` (string, 可选): 私钥文件路径
 - `passphrase` (string, 可选): 私钥密码
 - `keepalive_interval` (number, 可选): Keepalive 探测间隔（毫秒），默认 10000
 - `keepalive_count` (number, 可选): 最大无响应次数，默认 3
+- `strict_host_key_checking` (string, 可选): `yes`、`accept-new` 或 `no`
+- `known_hosts_path` (string, 可选): known_hosts 文件路径
+- `host_fingerprint` (string, 可选): 要求匹配的 `SHA256:` 主机指纹
+
+成功时返回 `session_id`、`host_fingerprint` 和 `host_key_type`。
 
 #### ssh_exec
 执行远程命令。预配置服务器时无需提供 `session_id`。
@@ -231,7 +241,8 @@ npm run build
 **参数：**
 - `session_id` (string, 可选): 会话 ID
 - `command` (string, 必填): 要执行的命令
-- `timeout` (number, 可选): 超时时间（毫秒）
+- `timeout` (number, 可选): 本次命令的超时时间（毫秒），范围 1000–300000。超时后关闭执行通道，并且不会自动再执行这条命令。关闭通道不能保证已经脱离会话的远端进程一定停止。
+- `background` (boolean, 可选): 为 true 时立即返回 `job_id`，命令继续在服务器上运行。用 `ssh_exec_poll` 查看输出，用 `ssh_exec_cancel` 关闭执行通道。后台任务只存在于当前 MCP 进程里。
 
 ```
 示例：ssh_exec(command="ls -la /var/log")
@@ -284,15 +295,18 @@ npm run build
 ```
 
 #### sftp_read
-读取远程文件内容（适用于文本文件）。
+按字节分段读取远程文件。空文件返回空内容。`utf8` 不会把一个字切成两半，继续读时使用返回的 `next_offset`。
 
 **参数：**
 - `session_id` (string, 可选): 会话 ID
 - `path` (string, 必填): 远程文件路径
-- `encoding` (string, 可选): 编码，默认 `utf-8`
+- `offset` (number, 可选): 起始字节，默认 0
+- `limit` (number, 可选): 最多读取的字节数，默认 25000
+- `encoding` (string, 可选): `utf8` 或 `base64`，默认 `utf8`
+- `timeout` (number, 可选): 无进展超时（毫秒）
 
 ```
-示例：sftp_read(path="/etc/nginx/nginx.conf")
+示例：sftp_read(path="/etc/nginx/nginx.conf", offset=0, limit=4000)
 ```
 
 #### sftp_write
@@ -397,7 +411,7 @@ npm run build
 |------|------|------|
 | 文件上传 | **无大小限制** | 使用流式传输，支持任意大小文件 |
 | 文件下载 | **无大小限制** | 使用流式传输，支持任意大小文件 |
-| 文件读取 | 25000 字符 | `sftp_read` 读取文本文件内容时会截断 |
+| 文件读取 | 每段最多 25000 字节 | `sftp_read` 用 `offset` / `next_offset` 继续读取 |
 | 命令长度 | 1000 字符 | `ssh_exec` 命令字符串最大长度 |
 | 命令输出 | 25000 字符 | 超过会被截断 |
 
@@ -414,16 +428,18 @@ SSH MCP Server 内置了一套完整的连接保活与自动恢复机制，确�
 
 ### 自动重连
 
-- 当检测到连接断开时，操作会自动触发重连
-- 重连对调用方完全透明，无需手动处理
-- SFTP 会话在重连后自动恢复，无需重新初始化
+- 当检测到连接断开时，同一个会话只会发起一次重连，避免并发操作互相拆掉新连接
+- 重连成功后，还没开始的操作会继续
+- SFTP 会话在重连后重新打开
 
 ### 指数退避重试
 
 - 操作失败时自动重试，最多 **3 次**（含首次尝试）
 - 每次重试的等待时间按指数增长：`baseDelay × 2^attempt`
 - 加入 ±25% 随机抖动，避免多客户端同时重试造成雪崩
-- 仅对连接类错误重试，认证失败等错误立即抛出
+- 只重试尚未开始的连接错误
+- 认证失败、主机密钥拒绝、命令超时不会重试
+- 命令通道一旦打开，或删除、重命名已经发到远端，失败后不会再执行一次
 - 可通过 `SSH_MAX_RECONNECT_ATTEMPTS`、`SSH_RECONNECT_BASE_DELAY`、`SSH_RECONNECT_MAX_DELAY` 自定义
 
 ## 安全注意事项
@@ -431,12 +447,14 @@ SSH MCP Server 内置了一套完整的连接保活与自动恢复机制，确�
 **重要安全提示：**
 
 1. **凭据保护**：密码和私钥仅在内存中保存，不会持久化到磁盘
-2. **日志安全**：日志中不会打印密码和私钥内容
-3. **会话清理**：服务关闭时会自动清理所有会话
-4. **命令限制**：命令长度限制为 1000 字符，避免滥用
-5. **输出限制**：输出超过 25000 字符会被截断
-6. **环境变量**：建议使用私钥认证而非密码，更安全
-7. **配置文件安全**：不要将包含密码的配置文件提交到版本控制
+2. **主机密钥**：默认 `accept-new`。新主机的公钥写入 known_hosts；同一主机的密钥发生变化时拒绝连接。需要固定目标时设置 `SSH_HOST_FINGERPRINT`。`no` 会跳过 known_hosts 比对，只在你明确接受风险时使用
+3. **文件替换**：上传、下载和远程写入先写临时文件，核对字节数后再替换目标。下载目录或传输失败不会清空原来的本地文件
+4. **日志安全**：日志中不会打印密码和私钥内容
+5. **会话清理**：服务关闭时会自动清理所有会话
+6. **命令限制**：命令长度限制为 1000 字符，避免滥用
+7. **输出限制**：输出超过 25000 字符会被截断
+8. **环境变量**：建议使用私钥认证而非密码，更安全
+9. **配置文件安全**：不要将包含密码的配置文件提交到版本控制
 
 ## 技术栈
 

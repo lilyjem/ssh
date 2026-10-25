@@ -205,6 +205,10 @@ Replace `/path/to/ssh/dist/index.js` with actual path:
 | SSH_MAX_RECONNECT_ATTEMPTS | No | Max auto-reconnect attempts, default 3 |
 | SSH_RECONNECT_BASE_DELAY | No | Reconnect base delay (ms), default 1000 |
 | SSH_RECONNECT_MAX_DELAY | No | Reconnect max delay cap (ms), default 10000 |
+| SSH_STRICT_HOST_KEY_CHECKING | No | `yes`, `accept-new`, or `no`. Default `accept-new`: store a new host key, reject a changed key |
+| SSH_KNOWN_HOSTS | No | known_hosts path, default `~/.ssh/known_hosts` |
+| SSH_HOST_FINGERPRINT | No | Required `SHA256:...` host fingerprint |
+| SSH_SFTP_TIMEOUT | No | SFTP inactivity timeout in ms, default 30000 |
 
 > *Note: At least one of password, private key content, or private key path is required
 
@@ -220,10 +224,16 @@ Create a new SSH connection (optional when using pre-configured server).
 - `port` (number, optional): SSH port, default 22
 - `username` (string, required): Username
 - `password` (string, optional): Password
-- `privateKey` (string, optional): Private key content
+- `private_key` (string, optional): Private key content
+- `private_key_path` (string, optional): Private key file path
 - `passphrase` (string, optional): Private key passphrase
 - `keepalive_interval` (number, optional): Keepalive probe interval (ms), default 10000
 - `keepalive_count` (number, optional): Max unresponsive probes, default 3
+- `strict_host_key_checking` (string, optional): `yes`, `accept-new`, or `no`
+- `known_hosts_path` (string, optional): known_hosts file
+- `host_fingerprint` (string, optional): Required `SHA256:` host fingerprint
+
+A successful result includes `session_id`, `host_fingerprint`, and `host_key_type`.
 
 #### ssh_exec
 Execute remote command. No `session_id` needed when using pre-configured server.
@@ -231,7 +241,8 @@ Execute remote command. No `session_id` needed when using pre-configured server.
 **Parameters:**
 - `session_id` (string, optional): Session ID
 - `command` (string, required): Command to execute
-- `timeout` (number, optional): Timeout in milliseconds
+- `timeout` (number, optional): Timeout for this call in milliseconds (1000–300000). On timeout the execution channel is closed and the command is not run again. Closing the channel does not prove that a detached remote process has stopped.
+- `background` (boolean, optional): Return a `job_id` immediately. Use `ssh_exec_poll` and `ssh_exec_cancel`. Jobs live only in the current MCP process.
 
 ```
 Example: ssh_exec(command="ls -la /var/log")
@@ -284,15 +295,18 @@ Example: sftp_download(remote_path="/var/log/syslog", local_path="/local/logs/sy
 ```
 
 #### sftp_read
-Read remote file content (for text files).
+Read a byte range of a remote file. An empty file returns empty content. `utf8` does not split a character; continue from `next_offset`.
 
 **Parameters:**
 - `session_id` (string, optional): Session ID
 - `path` (string, required): Remote file path
-- `encoding` (string, optional): Encoding, default `utf-8`
+- `offset` (number, optional): Starting byte, default 0
+- `limit` (number, optional): Maximum bytes, default 25000
+- `encoding` (string, optional): `utf8` or `base64`, default `utf8`
+- `timeout` (number, optional): Inactivity timeout in milliseconds
 
 ```
-Example: sftp_read(path="/etc/nginx/nginx.conf")
+Example: sftp_read(path="/etc/nginx/nginx.conf", offset=0, limit=4000)
 ```
 
 #### sftp_write
@@ -397,7 +411,7 @@ npm run build
 |------|-------|-------------|
 | File Upload | **No limit** | Uses streaming, supports any file size |
 | File Download | **No limit** | Uses streaming, supports any file size |
-| File Read | 25000 chars | `sftp_read` truncates text file content |
+| File Read | 25000 bytes per call | Continue with `offset` / `next_offset` |
 | Command Length | 1000 chars | `ssh_exec` max command string length |
 | Command Output | 25000 chars | Output exceeding limit is truncated |
 
@@ -414,16 +428,18 @@ SSH MCP Server includes a comprehensive connection keepalive and auto-recovery m
 
 ### Auto Reconnect
 
-- Automatically triggers reconnection when a disconnection is detected
-- Completely transparent to the caller — no manual handling required
-- SFTP sessions are automatically recovered after reconnection
+- A disconnected session is reconnected once, even if several operations notice the drop together
+- Operations that have not started continue after reconnect
+- The SFTP session is opened again after reconnect
 
 ### Exponential Backoff Retry
 
 - Automatically retries failed operations, up to **3 attempts** (including the initial try)
 - Wait time between retries grows exponentially: `baseDelay × 2^attempt`
 - Adds ±25% random jitter to prevent thundering herd from concurrent clients
-- Only retries on connection-related errors; authentication failures are thrown immediately
+- Retries only connection errors for work that has not started
+- Authentication failures, host-key rejections, and command timeouts are not retried
+- A command is not run again after its channel opens. Delete and rename are not repeated after they are sent
 - Customizable via `SSH_MAX_RECONNECT_ATTEMPTS`, `SSH_RECONNECT_BASE_DELAY`, `SSH_RECONNECT_MAX_DELAY`
 
 ## Security Notes
@@ -431,12 +447,14 @@ SSH MCP Server includes a comprehensive connection keepalive and auto-recovery m
 **Important Security Tips:**
 
 1. **Credential Protection**: Passwords and private keys are only stored in memory, never persisted to disk
-2. **Log Security**: Passwords and private keys are never printed in logs
-3. **Session Cleanup**: All sessions are automatically cleaned up when service shuts down
-4. **Command Limit**: Command length limited to 1000 characters to prevent abuse
-5. **Output Limit**: Output exceeding 25000 characters is truncated
-6. **Environment Variables**: Private key authentication is recommended over password for better security
-7. **Config File Security**: Never commit config files containing passwords to version control
+2. **Host keys**: Default `accept-new` stores an unseen host key in known_hosts and refuses the connection if that key later changes. Set `SSH_HOST_FINGERPRINT` to pin a key. `no` skips the known_hosts check
+3. **File replacement**: Upload, download, and remote write use a temporary file and replace the target only after the byte count matches. A failed download does not truncate the existing local file
+4. **Log Security**: Passwords and private keys are never printed in logs
+5. **Session Cleanup**: All sessions are automatically cleaned up when service shuts down
+6. **Command Limit**: Command length limited to 1000 characters to prevent abuse
+7. **Output Limit**: Output exceeding 25000 characters is truncated
+8. **Environment Variables**: Private key authentication is recommended over password for better security
+9. **Config File Security**: Never commit config files containing passwords to version control
 
 ## Tech Stack
 

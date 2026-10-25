@@ -7,6 +7,16 @@ import {
   DEFAULT_KEEPALIVE_COUNT_MAX,
 } from "../constants.js";
 import { expandHomePath } from "../utils/path.js";
+import { SshOperationError } from "../utils/errors.js";
+import {
+  decideHostKey,
+  DEFAULT_HOST_KEY_POLICY,
+  defaultKnownHostsPath,
+  formatKnownHostLine,
+  readKnownHosts,
+  recordKnownHost,
+  type HostKeyPolicy,
+} from "../utils/host-key.js";
 
 // SSH 客户端配置
 export interface SshClientConfig {
@@ -21,6 +31,32 @@ export interface SshClientConfig {
   connectTimeout?: number; // 连接超时时间（毫秒），默认 10 秒
   keepaliveInterval?: number; // keepalive 探测间隔（毫秒），0 表示禁用
   keepaliveCountMax?: number; // 最大无响应次数
+  strictHostKeyChecking?: HostKeyPolicy;
+  knownHostsPath?: string;
+  hostFingerprint?: string;
+}
+
+interface AcceptedHostKey {
+  fingerprint: string;
+  keyType: string;
+}
+
+export interface CommandHandle {
+  result: Promise<ExecResult>;
+  /** 关闭执行通道。已经结束的命令再次调用不会报错。 */
+  cancel(): void;
+}
+
+interface ExecChannel {
+  stderr: { on(event: "data", listener: (data: Buffer) => void): void };
+  on(event: "data", listener: (data: Buffer) => void): void;
+  on(event: "exit", listener: (code: number | null) => void): void;
+  on(event: "close", listener: () => void): void;
+  on(event: "error", listener: (err: Error) => void): void;
+  close(): void;
+  destroy(): void;
+  eof?(): void;
+  signal?(signalName: string): void;
 }
 
 // 默认超时时间
@@ -39,6 +75,11 @@ export class SshClient {
   private disconnectCallbacks: Array<() => void> = [];
   // 标记是否曾成功连接过
   private hasConnectedBefore: boolean = false;
+  // 同一时刻只允许一次重连，避免并发重连互相关掉
+  private reconnectTask: Promise<void> | null = null;
+  // 断连回调只通知一次，直到下一次连接成功
+  private disconnectNotified = false;
+  private hostKeyInfo: AcceptedHostKey | null = null;
 
   constructor(config: SshClientConfig) {
     this.config = config;
@@ -47,21 +88,44 @@ export class SshClient {
 
   /**
    * 建立 SSH 连接
+   * 所有回调都绑定当次创建的 client，超时或旧连接关闭不会动到后来替换上的连接。
    * @throws 连接失败时抛出错误
    */
   async connect(): Promise<void> {
+    const client = this.client;
+    this.hostKeyInfo = null;
+    let rejection: string | null = null;
+
     return new Promise((resolve, reject) => {
       const connectTimeout = this.config.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT;
+      let settled = false;
 
-      // 设置连接超时定时器
+      const settleReject = (err: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        reject(err);
+      };
+      const settleResolve = () => {
+        if (settled || this.client !== client) return;
+        settled = true;
+        clearTimeout(timeoutId);
+        this.connected = true;
+        this.hasConnectedBefore = true;
+        this.disconnectNotified = false;
+        resolve();
+      };
+
+      // 超时只关闭本次 client。重连已经换上新对象时，不能再 end() 新连接。
       const timeoutId = setTimeout(() => {
-        // 防止 end() 触发未捕获的 error 事件
-        this.client.on("error", () => {});
-        this.client.end();
-        reject(new Error(`Connection timeout after ${connectTimeout}ms`));
+        if (this.client === client) {
+          try { client.end(); } catch { /* 忽略关闭错误 */ }
+        }
+        settleReject(new SshOperationError(`Connection timeout after ${connectTimeout}ms`, {
+          retryable: true,
+        }));
       }, connectTimeout);
 
-      // 准备连接配置
       const connectConfig: ConnectConfig = {
         host: this.config.host,
         port: this.config.port,
@@ -69,12 +133,44 @@ export class SshClient {
         readyTimeout: connectTimeout,
       };
 
-      // 设置 keepalive，防止空闲连接被中间设备断开
       const keepaliveInterval = this.config.keepaliveInterval ?? DEFAULT_KEEPALIVE_INTERVAL;
       connectConfig.keepaliveInterval = keepaliveInterval;
       connectConfig.keepaliveCountMax = this.config.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT_MAX;
+      // 不要设置 hostHash，ssh2 设了以后会把原始公钥换成哈希，无法再对照 known_hosts。
+      connectConfig.hostVerifier = (key: Buffer) => {
+        if (this.client !== client || !Buffer.isBuffer(key)) {
+          rejection = "unexpected host key format";
+          return false;
+        }
+        try {
+          const policy = this.config.strictHostKeyChecking ?? DEFAULT_HOST_KEY_POLICY;
+          const knownHostsPath = this.config.knownHostsPath ?? defaultKnownHostsPath();
+          const decision = decideHostKey({
+            key,
+            host: this.config.host,
+            port: this.config.port,
+            policy,
+            knownHostsContent: policy === "no" ? "" : readKnownHosts(knownHostsPath),
+            pinnedFingerprint: this.config.hostFingerprint,
+          });
+          if (!decision.accept) {
+            rejection = decision.reason;
+            return false;
+          }
+          if (decision.record) {
+            recordKnownHost(knownHostsPath, formatKnownHostLine(this.config.host, this.config.port, key));
+          }
+          this.hostKeyInfo = {
+            fingerprint: decision.fingerprint,
+            keyType: decision.keyType,
+          };
+          return true;
+        } catch (err) {
+          rejection = (err as Error).message;
+          return false;
+        }
+      };
 
-      // 设置认证方式
       if (this.config.password) {
         connectConfig.password = this.config.password;
       }
@@ -86,139 +182,198 @@ export class SshClient {
         }
       } else if (this.config.privateKeyPath) {
         try {
-          // Node.js 不会自动展开 `~`，这里兼容 README 和 Cursor 配置中的常见写法。
           const privateKeyPath = expandHomePath(this.config.privateKeyPath);
           connectConfig.privateKey = readFileSync(privateKeyPath);
           if (this.config.passphrase) {
             connectConfig.passphrase = this.config.passphrase;
           }
         } catch (err) {
-          clearTimeout(timeoutId);
-          reject(new Error(`Failed to read private key: ${(err as Error).message}`));
+          settleReject(new SshOperationError(`Failed to read private key: ${(err as Error).message}`, {
+            retryable: false,
+          }));
           return;
         }
       }
 
-      // 监听连接就绪事件
-      this.client.once("ready", () => {
-        clearTimeout(timeoutId);
-        this.connected = true;
-        this.hasConnectedBefore = true;
-        resolve();
+      client.once("ready", () => {
+        settleResolve();
       });
 
-      // 监听错误事件
-      this.client.once("error", (err) => {
-        clearTimeout(timeoutId);
-        this.connected = false;
-        reject(new Error(`SSH connection error: ${err.message}`));
+      client.on("error", (err: Error & { level?: string; code?: string }) => {
+        if (this.client !== client || settled) return;
+        const authenticationFailed = err.level === "client-authentication"
+          || err.message.includes("All configured authentication methods failed");
+        let message = `SSH connection error: ${err.message}`;
+        if (rejection) message = `${message}: ${rejection}`;
+        settleReject(new SshOperationError(message, {
+          retryable: !authenticationFailed && !rejection,
+          level: err.level,
+          code: err.code,
+        }));
       });
 
-      // 监听关闭事件，触发断连回调
-      this.client.on("close", () => {
+      client.on("close", () => {
+        // 旧连接的 close 不能把后续连接标成已断开。
+        if (this.client !== client) return;
         const wasConnected = this.connected;
         this.connected = false;
-        if (wasConnected) {
-          for (const cb of this.disconnectCallbacks) {
-            try { cb(); } catch { /* 忽略回调中的错误 */ }
-          }
+        if (!settled) {
+          settleReject(new SshOperationError("SSH connection closed before ready", { retryable: true }));
         }
+        if (wasConnected) this.notifyDisconnect();
       });
 
-      // 发起连接
-      this.client.connect(connectConfig);
+      client.connect(connectConfig);
     });
   }
 
   /**
    * 执行远程命令
-   * @param command 要执行的命令
-   * @returns 执行结果（stdout、stderr、exitCode、truncated）
-   * @throws 未连接或执行失败时抛出错误
+   * timeout 只作用于本次调用；超时后关闭执行通道。
+   * 通道关闭不等于远程进程一定已经结束，已脱离的进程仍可能继续运行。
    */
-  async execCommand(command: string): Promise<ExecResult> {
+  async execCommand(command: string, timeout?: number, signal?: AbortSignal): Promise<ExecResult> {
+    const execTimeout = timeout ?? this.config.timeout ?? DEFAULT_EXEC_TIMEOUT;
+    return this.startCommand(command, { timeout: execTimeout, signal }).result;
+  }
+
+  /**
+   * 启动命令但不等待结束。不传 timeout 时不主动计时，供后台任务使用。
+   */
+  startCommand(
+    command: string,
+    options?: {
+      timeout?: number;
+      signal?: AbortSignal;
+      onStdout?: (chunk: string) => void;
+      onStderr?: (chunk: string) => void;
+    }
+  ): CommandHandle {
     if (!this.connected) {
-      throw new Error("Not connected");
+      throw new SshOperationError("Not connected", { retryable: true });
     }
 
-    const execTimeout = this.config.timeout ?? DEFAULT_EXEC_TIMEOUT;
-
-    return new Promise((resolve, reject) => {
+    const execTimeout = options?.timeout;
+    const execClient = this.client;
+    let cancelImpl = () => {};
+    const result = new Promise<ExecResult>((resolve, reject) => {
       let stdout = "";
       let stderr = "";
       let exitCode: number | null = null;
       let truncated = false;
-      let timedOut = false;
+      let settled = false;
+      let channel: ExecChannel | null = null;
 
-      // 设置执行超时定时器
-      const timeoutId = setTimeout(() => {
-        timedOut = true;
-        // 尝试关闭通道
-        reject(new Error(`Command execution timeout after ${execTimeout}ms`));
-      }, execTimeout);
+      // 先发 EOF 再关闭。只发 CLOSE 时，服务端会一直等结束事件，通道看起来没有关掉。
+      const stopChannel = (target: ExecChannel | null) => {
+        if (!target) return;
+        try { target.signal?.("TERM"); } catch { /* 部分服务端不接受信号 */ }
+        try { target.eof?.(); } catch { /* 通道可能已经结束 */ }
+        try { target.close(); } catch { /* 通道可能已经关闭 */ }
+        try { target.destroy(); } catch { /* 忽略重复销毁 */ }
+      };
 
-      this.client.exec(command, (err, channel) => {
-        if (err) {
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
+      const failSettled = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        if (timeoutId) clearTimeout(timeoutId);
+        reject(error);
+      };
+      if (execTimeout !== undefined) {
+        timeoutId = setTimeout(() => {
+          stopChannel(channel);
+          failSettled(new SshOperationError(
+            `Command execution timeout after ${execTimeout}ms; the execution channel was closed`,
+            { retryable: false, timedOut: true, commandStarted: channel !== null }
+          ));
+        }, execTimeout);
+      }
+      cancelImpl = () => {
+        stopChannel(channel);
+        failSettled(new SshOperationError("Command cancelled", {
+          retryable: false,
+          commandStarted: channel !== null,
+        }));
+      };
+      if (options?.signal?.aborted) cancelImpl();
+      else options?.signal?.addEventListener("abort", () => cancelImpl(), { once: true });
+
+      execClient.exec(command, (err, opened) => {
+        const execChannel = opened as ExecChannel | undefined;
+        if (settled) {
+          stopChannel(execChannel ?? null);
+          return;
+        }
+        if (err || !execChannel) {
+          settled = true;
           clearTimeout(timeoutId);
-          reject(new Error(`Failed to execute command: ${err.message}`));
+          const failure = err ?? new Error("missing channel");
+          const coded = failure as Error & { level?: string; code?: string };
+          reject(new SshOperationError(`Failed to execute command: ${failure.message}`, {
+            retryable: true,
+            commandStarted: false,
+            level: coded.level,
+            code: coded.code,
+          }));
           return;
         }
 
-        // 收集 stdout
-        channel.on("data", (data: Buffer) => {
-          if (timedOut) return;
+        // 通道已经打开，命令可能已经在远端开始。之后的失败不再重放。
+        channel = execChannel;
 
+        execChannel.on("data", (data: Buffer) => {
+          if (settled) return;
           const chunk = data.toString();
-          if (stdout.length + chunk.length > CHARACTER_LIMIT) {
-            // 截断输出
-            stdout += chunk.slice(0, CHARACTER_LIMIT - stdout.length);
-            truncated = true;
-          } else {
-            stdout += chunk;
-          }
+          const stored = stdout.length + chunk.length > CHARACTER_LIMIT
+            ? chunk.slice(0, CHARACTER_LIMIT - stdout.length)
+            : chunk;
+          if (stored.length < chunk.length) truncated = true;
+          stdout += stored;
+          if (stored) options?.onStdout?.(stored);
         });
 
-        // 收集 stderr
-        channel.stderr.on("data", (data: Buffer) => {
-          if (timedOut) return;
-
+        execChannel.stderr.on("data", (data: Buffer) => {
+          if (settled) return;
           const chunk = data.toString();
-          if (stderr.length + chunk.length > CHARACTER_LIMIT) {
-            // 截断输出
-            stderr += chunk.slice(0, CHARACTER_LIMIT - stderr.length);
-            truncated = true;
-          } else {
-            stderr += chunk;
-          }
+          const stored = stderr.length + chunk.length > CHARACTER_LIMIT
+            ? chunk.slice(0, CHARACTER_LIMIT - stderr.length)
+            : chunk;
+          if (stored.length < chunk.length) truncated = true;
+          stderr += stored;
+          if (stored) options?.onStderr?.(stored);
         });
 
-        // 监听退出事件
-        channel.on("exit", (code: number | null) => {
+        execChannel.on("exit", (code: number | null) => {
           exitCode = code;
         });
 
-        // 监听关闭事件
-        channel.on("close", () => {
-          if (timedOut) return;
-
+        execChannel.on("close", () => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timeoutId);
-          resolve({
-            stdout,
-            stderr,
-            exitCode,
-            truncated,
-          });
+          resolve({ stdout, stderr, exitCode, truncated });
         });
 
-        // 监听错误事件
-        channel.on("error", (channelErr: Error) => {
-          if (timedOut) return;
-
+        execChannel.on("error", (channelErr: Error & { level?: string; code?: string }) => {
+          if (settled) return;
+          settled = true;
           clearTimeout(timeoutId);
-          reject(new Error(`Channel error: ${channelErr.message}`));
+          stopChannel(execChannel);
+          reject(new SshOperationError(`Channel error: ${channelErr.message}`, {
+            retryable: false,
+            commandStarted: true,
+            level: channelErr.level,
+            code: channelErr.code,
+          }));
         });
       });
     });
+
+    return {
+      result,
+      cancel: () => cancelImpl(),
+    };
   }
 
   /**
@@ -234,69 +389,77 @@ export class SshClient {
       keepaliveInterval,
       keepaliveCountMax: this.config.keepaliveCountMax ?? DEFAULT_KEEPALIVE_COUNT_MAX,
       readyTimeout: this.config.connectTimeout ?? DEFAULT_CONNECT_TIMEOUT,
+      strictHostKeyChecking: this.config.strictHostKeyChecking ?? DEFAULT_HOST_KEY_POLICY,
+      knownHostsPath: this.config.knownHostsPath ?? defaultKnownHostsPath(),
     };
   }
 
-  /**
-   * 获取存储的连接配置（用于重连决策）
-   */
   getConfig(): SshClientConfig {
     return { ...this.config };
   }
 
-  /**
-   * 检查连接是否存活
-   * 基于内部状态标志判断，不发送网络探测
-   */
+  /** 本次握手接受的主机密钥。连接未完成时为 null。 */
+  getHostKey(): AcceptedHostKey | null {
+    return this.hostKeyInfo ? { ...this.hostKeyInfo } : null;
+  }
+
   isAlive(): boolean {
     return this.connected;
   }
 
-  /**
-   * 注册断连回调，在连接意外断开时触发
-   */
   onDisconnect(callback: () => void): void {
     this.disconnectCallbacks.push(callback);
   }
 
   /**
-   * 重新连接：关闭旧连接，创建新的 ssh2 Client，使用存储的配置重连
+   * 重新连接。并发调用共用同一次握手，不会各自新建一条连接。
    */
   async reconnect(): Promise<void> {
-    // 强制关闭旧连接（忽略错误）
-    try {
-      this.client.on("error", () => {});
-      this.client.end();
-    } catch {
-      // 忽略关闭错误
-    }
+    if (this.reconnectTask) return this.reconnectTask;
+    const task = this.reconnectInner().finally(() => {
+      if (this.reconnectTask === task) this.reconnectTask = null;
+    });
+    this.reconnectTask = task;
+    return task;
+  }
+
+  private async reconnectInner(): Promise<void> {
+    const previous = this.client;
+    const wasConnected = this.connected;
     this.connected = false;
-
-    // 创建全新的 ssh2 Client 实例
+    if (wasConnected) this.notifyDisconnect();
+    try {
+      previous.on("error", () => {});
+      previous.end();
+    } catch {
+      // 握手未完成时，end() 可能在发送 disconnect 前抛出，这时 socket 还没关。
+    }
+    try {
+      previous.destroy();
+    } catch {
+      // 忽略销毁错误
+    }
     this.client = new Client();
-
-    // 使用存储的配置重新连接
+    this.hostKeyInfo = null;
     await this.connect();
   }
 
-  /**
-   * 检查是否已连接
-   */
+  private notifyDisconnect(): void {
+    if (this.disconnectNotified) return;
+    this.disconnectNotified = true;
+    for (const cb of this.disconnectCallbacks) {
+      try { cb(); } catch { /* 忽略回调中的错误 */ }
+    }
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
 
-  /**
-   * 获取底层 SSH 客户端实例
-   * 用于高级操作或测试
-   */
   getClient(): Client {
     return this.client;
   }
 
-  /**
-   * 关闭 SSH 连接
-   */
   async close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.connected) {

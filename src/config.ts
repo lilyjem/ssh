@@ -24,6 +24,10 @@ export interface GlobalConfig {
   maxReconnectAttempts?: number;
   reconnectBaseDelay?: number;
   reconnectMaxDelay?: number;
+  strictHostKeyChecking?: "yes" | "accept-new" | "no";
+  knownHostsPath?: string;
+  hostFingerprint?: string;
+  sftpTimeout?: number;
 }
 
 /**
@@ -38,6 +42,10 @@ export interface GlobalConfig {
  * - SSH_PASSPHRASE: 私钥密码
  * - SSH_TIMEOUT: 命令执行超时（毫秒）
  * - SSH_CONNECT_TIMEOUT: 连接超时（毫秒）
+ * - SSH_STRICT_HOST_KEY_CHECKING: yes | accept-new | no，默认 accept-new
+ * - SSH_KNOWN_HOSTS: known_hosts 文件路径，默认 ~/.ssh/known_hosts
+ * - SSH_HOST_FINGERPRINT: 固定的 SHA256 主机指纹
+ * - SSH_SFTP_TIMEOUT: SFTP 操作超时（毫秒），默认 30000
  */
 export function loadConfigFromEnv(): GlobalConfig {
   const config: GlobalConfig = {};
@@ -109,6 +117,32 @@ export function loadConfigFromEnv(): GlobalConfig {
 
   if (process.env.SSH_RECONNECT_MAX_DELAY) {
     config.reconnectMaxDelay = parseInt(process.env.SSH_RECONNECT_MAX_DELAY, 10);
+  }
+
+  const hostKeyPolicy = process.env.SSH_STRICT_HOST_KEY_CHECKING;
+  if (hostKeyPolicy) {
+    if (hostKeyPolicy !== "yes" && hostKeyPolicy !== "accept-new" && hostKeyPolicy !== "no") {
+      throw new Error(
+        `SSH_STRICT_HOST_KEY_CHECKING must be yes, accept-new, or no, received: ${hostKeyPolicy}`
+      );
+    }
+    config.strictHostKeyChecking = hostKeyPolicy;
+  }
+
+  if (process.env.SSH_KNOWN_HOSTS) {
+    config.knownHostsPath = process.env.SSH_KNOWN_HOSTS;
+  }
+
+  if (process.env.SSH_HOST_FINGERPRINT) {
+    config.hostFingerprint = process.env.SSH_HOST_FINGERPRINT;
+  }
+
+  if (process.env.SSH_SFTP_TIMEOUT) {
+    const sftpTimeout = parseInt(process.env.SSH_SFTP_TIMEOUT, 10);
+    if (!Number.isFinite(sftpTimeout) || sftpTimeout < 1000 || sftpTimeout > 300000) {
+      throw new Error("SSH_SFTP_TIMEOUT must be an integer from 1000 to 300000");
+    }
+    config.sftpTimeout = sftpTimeout;
   }
 
   return config;

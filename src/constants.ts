@@ -12,3 +12,5 @@ export const DEFAULT_MAX_RECONNECT_ATTEMPTS = 3;
 export const DEFAULT_RECONNECT_BASE_DELAY = 1000;
 // 重连最大延迟（毫秒）
 export const DEFAULT_RECONNECT_MAX_DELAY = 10000;
+// SFTP 单次操作或传输无新数据的超时（毫秒）
+export const DEFAULT_SFTP_TIMEOUT = 30000;
