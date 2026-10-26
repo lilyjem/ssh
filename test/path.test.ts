@@ -12,6 +12,15 @@ describe("expandHomePath", () => {
     expect(expandHomePath("~\\.ssh\\id_rsa")).toBe(join(homedir(), ".ssh", "id_rsa"));
   });
 
+  it("preserves backslashes in slash-prefixed home paths", () => {
+    expect(expandHomePath("~/backup\\2026\\notes.txt"))
+      .toBe(join(homedir(), "backup\\2026\\notes.txt"));
+  });
+
+  it("expands the home directory alone", () => {
+    expect(expandHomePath("~")).toBe(homedir());
+  });
+
   it("keeps non-home paths unchanged", () => {
     expect(expandHomePath("/tmp/file.txt")).toBe("/tmp/file.txt");
     expect(expandHomePath("relative/file.txt")).toBe("relative/file.txt");

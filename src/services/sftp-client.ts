@@ -227,7 +227,19 @@ export class SftpClient {
         onDeadline();
         finish(this.deadlineError(reason, options?.timeout));
       });
-      run(finish, deadline.bump);
+      try {
+        run(finish, deadline.bump);
+      } catch (err) {
+        // ensureSftp 等同步失败时 Promise 构造函数会直接拒绝，但 deadline 已经启动，
+        // 必须走一次清理，否则定时器和 abort 监听会残留到进程结束。
+        if (settled) return;
+        try {
+          onDeadline();
+        } catch {
+          // 清理失败不能覆盖原始错误。
+        }
+        finish(err instanceof Error ? err : new Error(String(err)));
+      }
     });
   }
 
@@ -564,16 +576,19 @@ export class SftpClient {
   }
 
   private pipeLocalToRemote(localPath: string, remotePart: string, options?: SftpCallOptions): Promise<void> {
-    const readStream = createReadStream(localPath);
+    let readStream: ReturnType<typeof createReadStream> | undefined;
     let writeStream: ReturnType<SFTPWrapper["createWriteStream"]> | undefined;
     return this.startCall<void>(options, () => {
-      readStream.destroy();
+      readStream?.destroy();
       writeStream?.destroy();
       this.close();
     }, (finish, bump) => {
-      writeStream = this.ensureSftp().createWriteStream(remotePart);
+      // 先确认 SFTP 会话可用，再打开本地文件，避免同步失败后留下未关闭的 FD。
+      const sftp = this.ensureSftp();
+      readStream = createReadStream(localPath);
+      writeStream = sftp.createWriteStream(remotePart);
       const fail = (err: Error) => {
-        readStream.destroy();
+        readStream?.destroy();
         writeStream?.destroy();
         finish(err);
       };
@@ -587,16 +602,19 @@ export class SftpClient {
 
   private pipeRemoteToLocal(remotePath: string, localPart: string, options?: SftpCallOptions): Promise<void> {
     let readStream: ReturnType<SFTPWrapper["createReadStream"]> | undefined;
-    const writeStream = createWriteStream(localPart);
+    let writeStream: ReturnType<typeof createWriteStream> | undefined;
     return this.startCall<void>(options, () => {
       readStream?.destroy();
-      writeStream.destroy();
+      writeStream?.destroy();
       this.close();
     }, (finish, bump) => {
-      readStream = this.ensureSftp().createReadStream(remotePath);
+      // 会话可能在 stat 之后失效，必须校验通过后才能创建本地临时文件。
+      const sftp = this.ensureSftp();
+      readStream = sftp.createReadStream(remotePath);
+      writeStream = createWriteStream(localPart);
       const fail = (err: Error) => {
         readStream?.destroy();
-        writeStream.destroy();
+        writeStream?.destroy();
         finish(err);
       };
       readStream.on("data", () => bump());

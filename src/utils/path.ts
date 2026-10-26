@@ -12,8 +12,12 @@ export function expandHomePath(path: string): string {
     return homedir();
   }
 
-  // Windows 配置里也可能写成 `~\.ssh\id_rsa`，两种分隔符都要展开。
-  if (path.startsWith("~/") || path.startsWith("~\\")) {
+  if (path.startsWith("~/")) {
+    return join(homedir(), path.slice(2));
+  }
+
+  // 仅归一化 Windows 风格路径，保留 POSIX 路径中合法的反斜杠。
+  if (path.startsWith("~\\")) {
     return join(homedir(), path.slice(2).replace(/\\/g, "/"));
   }
 
