@@ -27,7 +27,7 @@ function toolError(err: unknown): {
   isError: true;
 } {
   return {
-    content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+    content: [{ type: "text", text: `Error: ${err instanceof Error ? err.message : String(err)}` }],
     isError: true,
   };
 }

@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { SshToolHandlers } from "../src/tools/ssh-tools.js";
+import { SshOperationError } from "../src/utils/errors.js";
 
 describe("SshToolHandlers 连接错误判断", () => {
   it("isConnectionError 正确识别连接相关错误", () => {
@@ -32,6 +33,22 @@ describe("SshToolHandlers 连接错误判断", () => {
         `不应重试: ${msg}`
       ).toBe(false);
     }
+  });
+
+  it("typed cancelled/timedOut 不再依赖错误文本", () => {
+    const handlers = new SshToolHandlers();
+    expect(handlers.shouldRetryOperation(new SshOperationError("anything", {
+      cancelled: true,
+      retryable: false,
+    }))).toBe(false);
+    expect(handlers.shouldRetryOperation(new SshOperationError("anything", {
+      timedOut: true,
+      retryable: false,
+    }))).toBe(false);
+    expect(handlers.shouldRetryOperation(new SshOperationError(
+      "Session s is disconnected or closing",
+      { retryable: false }
+    ))).toBe(false);
   });
 });
 

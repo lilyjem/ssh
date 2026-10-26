@@ -31,6 +31,32 @@ export interface GlobalConfig {
 }
 
 /**
+ * 解析完整的环境变量数字字符串。
+ * parseInt("10ms") 会静默得到 10，这里要求整个字符串都是数字，并且落在合理范围内。
+ */
+function parseIntegerEnv(name: string, value: string, min: number, max: number): number {
+  const text = value.trim();
+  if (!/^[+-]?\d+$/.test(text)) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}, received: ${value}`);
+  }
+  const parsed = Number(text);
+  if (!Number.isSafeInteger(parsed) || parsed < min || parsed > max) {
+    throw new Error(`${name} must be an integer from ${min} to ${max}, received: ${value}`);
+  }
+  return parsed;
+}
+
+// 环境变量允许的数值范围，与工具参数和 README 中的文档保持一致。
+const PORT_RANGE = [1, 65535] as const;
+const TIMEOUT_RANGE = [1000, 300000] as const;
+const CONNECT_TIMEOUT_RANGE = [1000, 60000] as const;
+const KEEPALIVE_INTERVAL_RANGE = [0, 3600000] as const;
+const KEEPALIVE_COUNT_RANGE = [1, 100] as const;
+const RECONNECT_ATTEMPTS_RANGE = [1, 1000] as const;
+const RECONNECT_DELAY_RANGE = [1, 600000] as const;
+const SFTP_TIMEOUT_RANGE = [1000, 300000] as const;
+
+/**
  * 从环境变量加载服务器配置
  * 支持的环境变量：
  * - SSH_HOST: 服务器地址（必填）
@@ -52,12 +78,15 @@ export function loadConfigFromEnv(): GlobalConfig {
 
   const host = process.env.SSH_HOST;
   const username = process.env.SSH_USERNAME;
+  const port = process.env.SSH_PORT
+    ? parseIntegerEnv("SSH_PORT", process.env.SSH_PORT, ...PORT_RANGE)
+    : 22;
 
   // 如果提供了 host 和 username，则构建服务器配置
   if (host && username) {
     config.server = {
       host,
-      port: parseInt(process.env.SSH_PORT || "22", 10),
+      port,
       username,
     };
 
@@ -91,31 +120,55 @@ export function loadConfigFromEnv(): GlobalConfig {
 
   // 超时配置
   if (process.env.SSH_TIMEOUT) {
-    config.timeout = parseInt(process.env.SSH_TIMEOUT, 10);
+    config.timeout = parseIntegerEnv("SSH_TIMEOUT", process.env.SSH_TIMEOUT, ...TIMEOUT_RANGE);
   }
 
   if (process.env.SSH_CONNECT_TIMEOUT) {
-    config.connectTimeout = parseInt(process.env.SSH_CONNECT_TIMEOUT, 10);
+    config.connectTimeout = parseIntegerEnv(
+      "SSH_CONNECT_TIMEOUT",
+      process.env.SSH_CONNECT_TIMEOUT,
+      ...CONNECT_TIMEOUT_RANGE
+    );
   }
 
   if (process.env.SSH_KEEPALIVE_INTERVAL) {
-    config.keepaliveInterval = parseInt(process.env.SSH_KEEPALIVE_INTERVAL, 10);
+    config.keepaliveInterval = parseIntegerEnv(
+      "SSH_KEEPALIVE_INTERVAL",
+      process.env.SSH_KEEPALIVE_INTERVAL,
+      ...KEEPALIVE_INTERVAL_RANGE
+    );
   }
 
   if (process.env.SSH_KEEPALIVE_COUNT) {
-    config.keepaliveCountMax = parseInt(process.env.SSH_KEEPALIVE_COUNT, 10);
+    config.keepaliveCountMax = parseIntegerEnv(
+      "SSH_KEEPALIVE_COUNT",
+      process.env.SSH_KEEPALIVE_COUNT,
+      ...KEEPALIVE_COUNT_RANGE
+    );
   }
 
   if (process.env.SSH_MAX_RECONNECT_ATTEMPTS) {
-    config.maxReconnectAttempts = parseInt(process.env.SSH_MAX_RECONNECT_ATTEMPTS, 10);
+    config.maxReconnectAttempts = parseIntegerEnv(
+      "SSH_MAX_RECONNECT_ATTEMPTS",
+      process.env.SSH_MAX_RECONNECT_ATTEMPTS,
+      ...RECONNECT_ATTEMPTS_RANGE
+    );
   }
 
   if (process.env.SSH_RECONNECT_BASE_DELAY) {
-    config.reconnectBaseDelay = parseInt(process.env.SSH_RECONNECT_BASE_DELAY, 10);
+    config.reconnectBaseDelay = parseIntegerEnv(
+      "SSH_RECONNECT_BASE_DELAY",
+      process.env.SSH_RECONNECT_BASE_DELAY,
+      ...RECONNECT_DELAY_RANGE
+    );
   }
 
   if (process.env.SSH_RECONNECT_MAX_DELAY) {
-    config.reconnectMaxDelay = parseInt(process.env.SSH_RECONNECT_MAX_DELAY, 10);
+    config.reconnectMaxDelay = parseIntegerEnv(
+      "SSH_RECONNECT_MAX_DELAY",
+      process.env.SSH_RECONNECT_MAX_DELAY,
+      ...RECONNECT_DELAY_RANGE
+    );
   }
 
   const hostKeyPolicy = process.env.SSH_STRICT_HOST_KEY_CHECKING;
@@ -137,11 +190,11 @@ export function loadConfigFromEnv(): GlobalConfig {
   }
 
   if (process.env.SSH_SFTP_TIMEOUT) {
-    const sftpTimeout = parseInt(process.env.SSH_SFTP_TIMEOUT, 10);
-    if (!Number.isFinite(sftpTimeout) || sftpTimeout < 1000 || sftpTimeout > 300000) {
-      throw new Error("SSH_SFTP_TIMEOUT must be an integer from 1000 to 300000");
-    }
-    config.sftpTimeout = sftpTimeout;
+    config.sftpTimeout = parseIntegerEnv(
+      "SSH_SFTP_TIMEOUT",
+      process.env.SSH_SFTP_TIMEOUT,
+      ...SFTP_TIMEOUT_RANGE
+    );
   }
 
   return config;

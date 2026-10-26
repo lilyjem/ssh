@@ -187,6 +187,8 @@ Replace `/path/to/ssh/dist/index.js` with actual path:
 
 > Tip: Windows paths can use forward slashes `/` or double backslashes `\\`
 
+The client targets Windows, macOS, and Linux. The remote host must provide SSH/SFTP and interprets commands using its own system; commands are not translated between operating systems. Windows access control depends on system ACLs, not POSIX `0600` modes. These fixes are validated on macOS; Windows/Linux still need native verification.
+
 ## Environment Variables
 
 | Variable | Required | Description |
@@ -195,14 +197,14 @@ Replace `/path/to/ssh/dist/index.js` with actual path:
 | SSH_PORT | No | SSH port, default 22 |
 | SSH_USERNAME | Yes | Username |
 | SSH_PASSWORD | No* | Password authentication |
-| SSH_PRIVATE_KEY | No* | Private key content (Base64 encoded) |
+| SSH_PRIVATE_KEY | No* | Private key content (raw PEM or Base64-encoded PEM) |
 | SSH_PRIVATE_KEY_PATH | No* | Private key file path (supports `~` expansion) |
 | SSH_PASSPHRASE | No | Private key passphrase |
 | SSH_TIMEOUT | No | Command timeout (ms), default 30000 |
 | SSH_CONNECT_TIMEOUT | No | Connection timeout (ms), default 10000 |
 | SSH_KEEPALIVE_INTERVAL | No | Keepalive probe interval (ms), default 10000. Set to 0 to disable |
 | SSH_KEEPALIVE_COUNT | No | Max unresponsive keepalive probes before declaring connection dead, default 3 |
-| SSH_MAX_RECONNECT_ATTEMPTS | No | Max auto-reconnect attempts, default 3 |
+| SSH_MAX_RECONNECT_ATTEMPTS | No | Total attempts including the first, default 3; positive integer, 1 disables retries, 0 is invalid |
 | SSH_RECONNECT_BASE_DELAY | No | Reconnect base delay (ms), default 1000 |
 | SSH_RECONNECT_MAX_DELAY | No | Reconnect max delay cap (ms), default 10000 |
 | SSH_STRICT_HOST_KEY_CHECKING | No | `yes`, `accept-new`, or `no`. Default `accept-new`: store a new host key, reject a changed key |
@@ -211,6 +213,14 @@ Replace `/path/to/ssh/dist/index.js` with actual path:
 | SSH_SFTP_TIMEOUT | No | SFTP inactivity timeout in ms, default 30000 |
 
 > *Note: At least one of password, private key content, or private key path is required
+
+There are **two authentication methods and three input forms**: password, or a private key supplied as content or a file path. Encrypted keys accept a passphrase; this is not a separate authentication method. SSH Agent, keyboard-interactive authentication, and MFA are not supported.
+
+Numeric environment values must be complete integers, without units or fractions. Command/SFTP timeouts: 1000–300000ms; connect timeout: 1000–60000ms; keepalive interval: 0–3600000ms; keepalive count: 1–100; attempts: 1–1000; backoff delays: 1–600000ms.
+
+SFTP deadlines cover subsystem initialization, reads/writes, and final rename. Received read data and server-acknowledged write blocks refresh inactivity timers. These are phase inactivity limits, not total transfer duration limits; write progress is observed at application-write-block granularity.
+
+Concurrent calls share SFTP initialization but have independent waiting deadlines and cancellation. The underlying initialization is separately capped by `SSH_SFTP_TIMEOUT` (30000ms by default); an unfinished initialization is closed when its last waiter leaves.
 
 ## Tools
 
@@ -235,6 +245,10 @@ Create a new SSH connection (optional when using pre-configured server).
 
 A successful result includes `session_id`, `host_fingerprint`, and `host_key_type`.
 
+If a known host changes its key or algorithm, verify the new fingerprint through a trusted channel before updating known_hosts. Do not use `no` simply to bypass the warning.
+
+Hashed host records are checked against both the supplied spelling and its lowercase token. Hashes cannot reveal other mixed-case spellings used by external tools; use lowercase hostnames consistently when generating and using hashed records, and pin fingerprints for higher-assurance connections.
+
 #### ssh_exec
 Execute remote command. No `session_id` needed when using pre-configured server.
 
@@ -243,6 +257,10 @@ Execute remote command. No `session_id` needed when using pre-configured server.
 - `command` (string, required): Command to execute
 - `timeout` (number, optional): Timeout for this call in milliseconds (1000–300000). On timeout the execution channel is closed and the command is not run again. Closing the channel does not prove that a detached remote process has stopped.
 - `background` (boolean, optional): Return a `job_id` immediately. Use `ssh_exec_poll` and `ssh_exec_cancel`. Jobs live only in the current MCP process.
+
+If a started command loses its connection before reporting an exit status, the call fails with an unknown execution outcome and is not replayed. Check the remote state before retrying.
+
+Up to 32 background jobs are retained. Terminal jobs expire lazily after 15 minutes and may be evicted earlier for capacity; when all 32 are running, new jobs are rejected. Disconnecting removes that session's jobs. Poll offsets use JavaScript UTF-16 string indexes; reuse `next_stdout_offset` unchanged.
 
 ```
 Example: ssh_exec(command="ls -la /var/log")
@@ -296,6 +314,8 @@ Example: sftp_download(remote_path="/var/log/syslog", local_path="/local/logs/sy
 
 #### sftp_read
 Read a byte range of a remote file. An empty file returns empty content. `utf8` does not split a character; continue from `next_offset`.
+
+If `limit` cannot hold the next complete UTF-8 character, the call fails explicitly instead of returning a non-advancing empty page. Increase `limit` (usually to at least 4), or use `base64` for exact bytes.
 
 **Parameters:**
 - `session_id` (string, optional): Session ID
@@ -447,8 +467,8 @@ SSH MCP Server includes a comprehensive connection keepalive and auto-recovery m
 **Important Security Tips:**
 
 1. **Credential Protection**: Passwords and private keys are only stored in memory, never persisted to disk
-2. **Host keys**: Default `accept-new` stores an unseen host key in known_hosts and refuses the connection if that key later changes. Set `SSH_HOST_FINGERPRINT` to pin a key. `no` skips the known_hosts check
-3. **File replacement**: Upload, download, and remote write use a temporary file and replace the target only after the byte count matches. A failed download does not truncate the existing local file
+2. **Host keys**: Default `accept-new` uses trust on first use (TOFU). A known host presenting a nonmatching key is rejected, including an algorithm change. DNS matching is ASCII case-insensitive and honors negated patterns. This is not a complete OpenSSH configuration or certificate verifier; `@cert-authority` is unsupported. `SSH_HOST_FINGERPRINT` pins a key; `yes` still requires a matching known_hosts entry. `no` skips known_hosts, including revocations, but still checks a pinned fingerprint
+3. **File replacement**: Upload, download, and remote write use a temporary file and verify its byte count before replacement. If safe remote overwrite is unavailable, the operation fails without first deleting the original. Remote temporary files may require manual cleanup after connection loss
 4. **Log Security**: Passwords and private keys are never printed in logs
 5. **Session Cleanup**: All sessions are automatically cleaned up when service shuts down
 6. **Command Limit**: Command length limited to 1000 characters to prevent abuse

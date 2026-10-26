@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { withRetry, sleep } from "../src/utils/retry.js";
+import { computeRetryDelay, withRetry, sleep } from "../src/utils/retry.js";
 
 describe("sleep", () => {
   it("等待指定毫秒数", async () => {
@@ -94,5 +94,96 @@ describe("withRetry", () => {
     // 总耗时应在合理范围内
     expect(elapsed).toBeGreaterThanOrEqual(50);
     expect(elapsed).toBeLessThan(500);
+  });
+});
+
+describe("withRetry 参数边界", () => {
+  it.each([0, -1, 1.5, NaN, Infinity, -Infinity])(
+    "maxAttempts=%s 明确拒绝且不执行操作",
+    async (maxAttempts) => {
+      const fn = vi.fn().mockResolvedValue("ok");
+      await expect(
+        withRetry(fn, { maxAttempts, baseDelay: 1, maxDelay: 1 })
+      ).rejects.toThrow(/maxAttempts/);
+      expect(fn).not.toHaveBeenCalled();
+    }
+  );
+
+  it("maxAttempts 包含首次尝试，1 表示不重试", async () => {
+    const fn = vi.fn().mockRejectedValue(new Error("boom"));
+    await expect(
+      withRetry(fn, { maxAttempts: 1, baseDelay: 1, maxDelay: 1 })
+    ).rejects.toThrow("boom");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("maxAttempts=2 表示首次加一次重试", async () => {
+    const fn = vi.fn().mockRejectedValue(new Error("boom"));
+    await expect(
+      withRetry(fn, { maxAttempts: 2, baseDelay: 1, maxDelay: 1 })
+    ).rejects.toThrow("boom");
+    expect(fn).toHaveBeenCalledTimes(2);
+  });
+
+  it("拒绝负数或非有限延迟", async () => {
+    const fn = vi.fn().mockResolvedValue("ok");
+    await expect(
+      withRetry(fn, { maxAttempts: 2, baseDelay: -1, maxDelay: 10 })
+    ).rejects.toThrow(/baseDelay/);
+    await expect(
+      withRetry(fn, { maxAttempts: 2, baseDelay: 10, maxDelay: NaN })
+    ).rejects.toThrow(/maxDelay/);
+  });
+});
+
+describe("withRetry 取消", () => {
+  it("开始前已经取消时不执行操作", async () => {
+    const controller = new AbortController();
+    controller.abort();
+    const fn = vi.fn().mockResolvedValue("ok");
+
+    const error = await withRetry(fn, {
+      maxAttempts: 5,
+      baseDelay: 5,
+      maxDelay: 10,
+      signal: controller.signal,
+    }).catch((err: Error) => err);
+
+    expect((error as { cancelled?: boolean }).cancelled).toBe(true);
+    expect(fn).not.toHaveBeenCalled();
+  });
+
+  it("退避等待中取消后不再发起后续尝试", async () => {
+    const controller = new AbortController();
+    const fn = vi.fn().mockRejectedValue(new Error("fail"));
+    const pending = withRetry(fn, {
+      maxAttempts: 5,
+      baseDelay: 60,
+      maxDelay: 60,
+      signal: controller.signal,
+    });
+
+    await sleep(10);
+    controller.abort();
+    const error = await pending.catch((err: Error) => err);
+
+    expect((error as { cancelled?: boolean }).cancelled).toBe(true);
+    expect(fn).toHaveBeenCalledTimes(1);
+
+    // 等过原本的重试窗口，确认取消后不会偷偷再尝试。
+    await sleep(150);
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("computeRetryDelay", () => {
+  it("抖动加完后再以 maxDelay 封顶", () => {
+    for (const random of [0, 0.5, 0.999, 1]) {
+      expect(computeRetryDelay(100, 100, 0, random)).toBeLessThanOrEqual(100);
+      expect(computeRetryDelay(1000, 100, 0, random)).toBeLessThanOrEqual(100);
+      expect(computeRetryDelay(1000, 100, 3, random)).toBeLessThanOrEqual(100);
+    }
+    expect(computeRetryDelay(100, 1000, 0, 1)).toBe(125);
+    expect(computeRetryDelay(0, 1000, 0, 1)).toBe(0);
   });
 });

@@ -105,12 +105,14 @@ export function decideHostKey(options: {
   let revokedExact = false;
   let changed = false;
   for (const entry of parseKnownHosts(options.knownHostsContent)) {
-    if (entry.certAuthority || entry.keyType !== keyType) continue;
-    if (!entry.patterns.some((pattern) => patternMatches(pattern, token))) continue;
+    // CA 行不是主机密钥本身；本实现不做证书验证，保持忽略。
+    if (entry.certAuthority) continue;
+    if (!patternListMatches(entry.patterns, token)) continue;
     if (keysEqual(options.key, entry.keyBase64)) {
       if (entry.revoked) revokedExact = true;
       else exact = true;
     } else if (!entry.revoked) {
+      // 同一主机已有任何不匹配的密钥（包括其他算法）都视为变化，不能再当新主机记录。
       changed = true;
     }
   }
@@ -195,20 +197,48 @@ function parseKnownHosts(content: string): KnownHostEntry[] {
   return entries;
 }
 
-function patternMatches(pattern: string, token: string): boolean {
-  if (pattern.startsWith("!")) return false;
-  if (pattern.startsWith("|1|")) return hashedHostMatches(token, pattern);
-  if (!pattern.includes("*") && !pattern.includes("?")) return pattern === token;
+/** 主机名中的 ASCII 字母按 DNS 规则折叠为小写；base64 哈希模式必须保持原字节。 */
+function canonicalHostToken(value: string): string {
+  return value.replace(/[A-Z]/g, (char) => char.toLowerCase());
+}
+
+/**
+ * OpenSSH 模式列表：至少命中一个正向模式，且不能命中任何 ! 负向模式。
+ * 只有负向模式的行永远不匹配，不能单靠 ! 建立信任。
+ * 哈希模式可能由外部工具按原始大小写主机标记生成，因此同时尝试原始标记和规范化标记。
+ */
+function patternListMatches(patterns: string[], token: string): boolean {
+  const canonicalToken = canonicalHostToken(token);
+  let positive = false;
+  for (const pattern of patterns) {
+    const negated = pattern.startsWith("!");
+    const body = negated ? pattern.slice(1) : pattern;
+    if (!body) continue;
+    const matched = body.startsWith("|1|")
+      ? hashedHostMatches(token, body) || hashedHostMatches(canonicalToken, body)
+      : patternMatches(body, canonicalToken);
+    if (!matched) continue;
+    if (negated) return false;
+    positive = true;
+  }
+  return positive;
+}
+
+function patternMatches(pattern: string, canonicalToken: string): boolean {
+  const canonicalPattern = canonicalHostToken(pattern);
+  if (!canonicalPattern.includes("*") && !canonicalPattern.includes("?")) {
+    return canonicalPattern === canonicalToken;
+  }
 
   // OpenSSH 通配符：* 和 ?。其余字符按字面量匹配。
   let source = "^";
-  for (const char of pattern) {
+  for (const char of canonicalPattern) {
     if (char === "*") source += ".*";
     else if (char === "?") source += ".";
     else source += char.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   }
   source += "$";
-  return new RegExp(source).test(token);
+  return new RegExp(source).test(canonicalToken);
 }
 
 /** OpenSSH |1| 哈希主机：HMAC-SHA1 的密钥是 salt，数据是主机标记。 */
@@ -234,7 +264,7 @@ function keysEqual(presented: Buffer, storedBase64: string): boolean {
 
 function normalizeFingerprint(value: string): string {
   const trimmed = value.trim();
-  const body = trimmed.replace(/^SHA256:/i, "");
+  const body = trimmed.replace(/^SHA256:/i, "").replace(/=+$/, "");
   return `SHA256:${body}`;
 }
 

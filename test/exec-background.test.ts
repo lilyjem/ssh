@@ -91,4 +91,25 @@ describe("后台长任务", () => {
     await expect(pending).rejects.toThrow(/cancel/i);
     await waitFor(() => server.stats.sleepClosed);
   }, 5000);
+
+  it("连接中断时后台任务标记为 failed，而不是用 null 状态冒充成功", async () => {
+    const { server, handlers, sessionId } = await setup();
+    const started = await handlers.exec({
+      session_id: sessionId,
+      command: "sleep",
+      background: true,
+    });
+    if (!("job_id" in started)) throw new Error("缺少 job_id");
+    await waitFor(() => server.stats.execs.includes("sleep"));
+
+    server.dropClients();
+    await waitFor(async () => {
+      const polled = await handlers.pollExec({ job_id: started.job_id });
+      return polled.status === "failed";
+    }, 3000);
+
+    const failed = await handlers.pollExec({ job_id: started.job_id });
+    expect(failed.status).toBe("failed");
+    expect(failed.exit_code).toBeNull();
+  }, 5000);
 });

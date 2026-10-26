@@ -1,11 +1,12 @@
 /**
  * SSH 操作错误。
- * retryable / commandStarted / timedOut 供重试策略使用，避免再靠错误文本猜测能否安全重试。
+ * retryable / commandStarted / timedOut / cancelled 供重试和清理策略使用。
  */
 export class SshOperationError extends Error {
   retryable: boolean;
   commandStarted: boolean;
   timedOut: boolean;
+  cancelled: boolean;
   level?: string;
 
   constructor(
@@ -14,6 +15,7 @@ export class SshOperationError extends Error {
       retryable?: boolean;
       commandStarted?: boolean;
       timedOut?: boolean;
+      cancelled?: boolean;
       level?: string;
     } = {}
   ) {
@@ -22,6 +24,7 @@ export class SshOperationError extends Error {
     this.retryable = init.retryable ?? true;
     this.commandStarted = init.commandStarted ?? false;
     this.timedOut = init.timedOut ?? false;
+    this.cancelled = init.cancelled ?? false;
     this.level = init.level;
   }
 }
