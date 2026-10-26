@@ -208,7 +208,6 @@ export class SshClient {
         settleReject(new SshOperationError(message, {
           retryable: !authenticationFailed && !rejection,
           level: err.level,
-          code: err.code,
         }));
       });
 
@@ -314,7 +313,6 @@ export class SshClient {
             retryable: true,
             commandStarted: false,
             level: coded.level,
-            code: coded.code,
           }));
           return;
         }
@@ -322,26 +320,28 @@ export class SshClient {
         // 通道已经打开，命令可能已经在远端开始。之后的失败不再重放。
         channel = execChannel;
 
-        execChannel.on("data", (data: Buffer) => {
-          if (settled) return;
+        const appendOutput = (
+          data: Buffer,
+          current: string,
+          push: (text: string) => void
+        ): string => {
           const chunk = data.toString();
-          const stored = stdout.length + chunk.length > CHARACTER_LIMIT
-            ? chunk.slice(0, CHARACTER_LIMIT - stdout.length)
+          const stored = current.length + chunk.length > CHARACTER_LIMIT
+            ? chunk.slice(0, CHARACTER_LIMIT - current.length)
             : chunk;
           if (stored.length < chunk.length) truncated = true;
-          stdout += stored;
-          if (stored) options?.onStdout?.(stored);
+          if (stored) push(stored);
+          return current + stored;
+        };
+
+        execChannel.on("data", (data: Buffer) => {
+          if (settled) return;
+          stdout = appendOutput(data, stdout, (text) => options?.onStdout?.(text));
         });
 
         execChannel.stderr.on("data", (data: Buffer) => {
           if (settled) return;
-          const chunk = data.toString();
-          const stored = stderr.length + chunk.length > CHARACTER_LIMIT
-            ? chunk.slice(0, CHARACTER_LIMIT - stderr.length)
-            : chunk;
-          if (stored.length < chunk.length) truncated = true;
-          stderr += stored;
-          if (stored) options?.onStderr?.(stored);
+          stderr = appendOutput(data, stderr, (text) => options?.onStderr?.(text));
         });
 
         execChannel.on("exit", (code: number | null) => {
@@ -352,7 +352,7 @@ export class SshClient {
           if (settled) return;
           settled = true;
           clearTimeout(timeoutId);
-          resolve({ stdout, stderr, exitCode, truncated });
+          resolve({ stdout, stderr, exit_code: exitCode, truncated });
         });
 
         execChannel.on("error", (channelErr: Error & { level?: string; code?: string }) => {
@@ -364,7 +364,6 @@ export class SshClient {
             retryable: false,
             commandStarted: true,
             level: channelErr.level,
-            code: channelErr.code,
           }));
         });
       });
@@ -394,6 +393,7 @@ export class SshClient {
     };
   }
 
+  /** 当前连接配置的副本（不含敏感信息）。 */
   getConfig(): SshClientConfig {
     return { ...this.config };
   }
@@ -403,10 +403,12 @@ export class SshClient {
     return this.hostKeyInfo ? { ...this.hostKeyInfo } : null;
   }
 
+  /** 连接是否仍然可用。 */
   isAlive(): boolean {
     return this.connected;
   }
 
+  /** 注册断连回调；同一段断开只通知一次。 */
   onDisconnect(callback: () => void): void {
     this.disconnectCallbacks.push(callback);
   }
@@ -452,14 +454,12 @@ export class SshClient {
     }
   }
 
-  isConnected(): boolean {
-    return this.connected;
-  }
-
+  /** 底层 ssh2 Client，用于打开 SFTP 或执行通道。 */
   getClient(): Client {
     return this.client;
   }
 
+  /** 断开连接并释放资源。 */
   async close(): Promise<void> {
     return new Promise((resolve) => {
       if (!this.connected) {

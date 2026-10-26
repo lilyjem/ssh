@@ -40,3 +40,34 @@ describe("主机密钥环境变量", () => {
     expect(() => loadConfigFromEnv()).toThrow(/SSH_STRICT_HOST_KEY_CHECKING/);
   });
 });
+
+describe("SSH_PRIVATE_KEY 解析", () => {
+  const ENV_KEYS = ["SSH_HOST", "SSH_USERNAME", "SSH_PRIVATE_KEY"] as const;
+  const saved = new Map<string, string | undefined>();
+  const pem = "-----BEGIN OPENSSH PRIVATE KEY-----\nabc\n-----END OPENSSH PRIVATE KEY-----\n";
+
+  afterEach(() => {
+    for (const key of ENV_KEYS) {
+      const value = saved.get(key);
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
+  });
+
+  function load(privateKey: string): string | undefined {
+    for (const key of ENV_KEYS) saved.set(key, process.env[key]);
+    process.env.SSH_HOST = "example.com";
+    process.env.SSH_USERNAME = "deploy";
+    process.env.SSH_PRIVATE_KEY = privateKey;
+    return loadConfigFromEnv().server?.privateKey;
+  }
+
+  it("接受原始 PEM 和 Base64 编码的 PEM", () => {
+    expect(load(pem)).toBe(pem);
+    expect(load(Buffer.from(pem).toString("base64"))).toBe(pem);
+  });
+
+  it("既不是 PEM 也不是 Base64 时直接失败", () => {
+    expect(() => load("not-a-key")).toThrow(/SSH_PRIVATE_KEY/);
+  });
+});

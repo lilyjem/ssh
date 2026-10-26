@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { z } from "zod";
 import { SessionRegistry } from "../services/session-registry.js";
 import { SshClient, type SshClientConfig } from "../services/ssh-client.js";
-import { SftpClient } from "../services/sftp-client.js";
+import { SftpClient, isDirectoryMode } from "../services/sftp-client.js";
 import { sanitizeCommand } from "../utils/validation.js";
 import { withRetry } from "../utils/retry.js";
 import { markNotRetryable, SshOperationError } from "../utils/errors.js";
@@ -12,121 +12,121 @@ import {
   DEFAULT_RECONNECT_BASE_DELAY,
   DEFAULT_RECONNECT_MAX_DELAY,
 } from "../constants.js";
-import type { SessionInfo } from "../types.js";
+import type { ExecResult, SessionId, SessionInfo } from "../types.js";
 import type { GlobalConfig } from "../config.js";
 
-// 日志输出到 stderr，避免干扰 MCP 协议通信
-function log(message: string): void {
-  console.error(`[SSH-MCP] ${new Date().toISOString()} ${message}`);
-}
+import { log } from "../utils/log.js";
 
 // ============ Zod Schemas 用于参数校验 ============
 
+const sessionIdField = z.string().optional()
+  .describe("Session ID (optional if using pre-configured server)");
+
+const SftpTimeoutField = {
+  timeout: z.number().int().min(1000).max(300000).optional()
+    .describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
+};
+
 // 连接参数 Schema
 export const ConnectParamsSchema = z.object({
-  host: z.string().min(1, "host is required"),
-  port: z.number().int().min(1).max(65535).default(22),
-  username: z.string().min(1, "username is required"),
-  password: z.string().optional(),
-  private_key: z.string().optional(),
-  private_key_path: z.string().optional(),
-  passphrase: z.string().optional(),
-  timeout: z.number().int().min(1000).max(300000).optional(),
-  connect_timeout: z.number().int().min(1000).max(60000).optional(),
-  keepalive_interval: z.number().int().min(0).optional(),
-  keepalive_count: z.number().int().min(1).optional(),
-  strict_host_key_checking: z.enum(["yes", "accept-new", "no"]).optional(),
-  known_hosts_path: z.string().min(1).optional(),
-  host_fingerprint: z.string().min(1).optional(),
+  host: z.string().min(1, "host is required").describe("Remote server hostname or IP address"),
+  port: z.number().int().min(1).max(65535).default(22).describe("SSH port (default: 22)"),
+  username: z.string().min(1, "username is required").describe("SSH username"),
+  password: z.string().optional().describe("Password for authentication"),
+  private_key: z.string().optional().describe("Private key content (PEM format)"),
+  private_key_path: z.string().optional().describe("Path to private key file"),
+  passphrase: z.string().optional().describe("Passphrase for encrypted private key"),
+  timeout: z.number().int().min(1000).max(300000).optional().describe("Command execution timeout in ms (default: 30000)"),
+  connect_timeout: z.number().int().min(1000).max(60000).optional().describe("Connection timeout in ms (default: 10000)"),
+  keepalive_interval: z.number().int().min(0).optional().describe("Keepalive interval in ms (default: 10000, 0 to disable)"),
+  keepalive_count: z.number().int().min(1).optional().describe("Max keepalive failures before disconnect (default: 3)"),
+  strict_host_key_checking: z.enum(["yes", "accept-new", "no"]).optional().describe("Host key policy. accept-new records unseen keys and rejects changed keys. yes rejects unseen keys. no skips known_hosts."),
+  known_hosts_path: z.string().min(1).optional().describe("known_hosts file. Defaults to ~/.ssh/known_hosts"),
+  host_fingerprint: z.string().min(1).optional().describe("Required SHA256 host key fingerprint, for example SHA256:abc..."),
 });
 
 // 执行命令参数 Schema（支持无 session_id 时使用默认连接）
 export const ExecParamsSchema = z.object({
-  session_id: z.string().optional(),
-  command: z.string().min(1, "command is required"),
-  timeout: z.number().int().min(1000).max(300000).optional(),
-  background: z.boolean().optional(),
+  session_id: sessionIdField,
+  command: z.string().min(1, "command is required").describe("Command to execute on the remote server"),
+  timeout: z.number().int().min(1000).max(300000).optional().describe("Override command timeout in ms. For background jobs this is optional; omit it to keep the command running until it exits or is cancelled."),
+  background: z.boolean().optional().describe("Return immediately and keep the command running as a job"),
 });
 
 export const PollExecParamsSchema = z.object({
-  job_id: z.string().min(1, "job_id is required"),
-  stdout_offset: z.number().int().min(0).optional(),
+  job_id: z.string().min(1, "job_id is required").describe("Job ID returned by ssh_exec"),
+  stdout_offset: z.number().int().min(0).optional().describe("Return stdout starting at this character offset"),
 });
 
 export const CancelExecParamsSchema = z.object({
-  job_id: z.string().min(1, "job_id is required"),
+  job_id: z.string().min(1, "job_id is required").describe("Job ID returned by ssh_exec"),
 });
-
-const SftpTimeoutField = {
-  timeout: z.number().int().min(1000).max(300000).optional(),
-};
 
 // 断开连接参数 Schema
 export const DisconnectParamsSchema = z.object({
-  session_id: z.string().optional(),
+  session_id: sessionIdField,
 });
 
 // SFTP 列表参数 Schema
 export const SftpListParamsSchema = z.object({
-  session_id: z.string().optional(),
-  path: z.string().default("/"),
+  session_id: sessionIdField,
+  path: z.string().default("/").describe("Remote directory path to list (default: /)"),
   ...SftpTimeoutField,
 });
 
 // SFTP 上传参数 Schema
 export const SftpUploadParamsSchema = z.object({
-  session_id: z.string().optional(),
-  local_path: z.string().min(1, "local_path is required"),
-  remote_path: z.string().min(1, "remote_path is required"),
+  session_id: sessionIdField,
+  local_path: z.string().min(1, "local_path is required").describe("Local file path to upload"),
+  remote_path: z.string().min(1, "remote_path is required").describe("Remote destination path"),
   ...SftpTimeoutField,
 });
 
 // SFTP 下载参数 Schema
 export const SftpDownloadParamsSchema = z.object({
-  session_id: z.string().optional(),
-  remote_path: z.string().min(1, "remote_path is required"),
-  local_path: z.string().min(1, "local_path is required"),
+  session_id: sessionIdField,
+  remote_path: z.string().min(1, "remote_path is required").describe("Remote file path to download"),
+  local_path: z.string().min(1, "local_path is required").describe("Local destination path"),
   ...SftpTimeoutField,
 });
 
 // SFTP 读取文件参数 Schema
 export const SftpReadParamsSchema = z.object({
-  session_id: z.string().optional(),
-  path: z.string().min(1, "path is required"),
-  offset: z.number().int().min(0).optional(),
-  limit: z.number().int().min(1).max(25000).optional(),
-  encoding: z.enum(["utf8", "base64"]).optional(),
+  session_id: sessionIdField,
+  path: z.string().min(1, "path is required").describe("Remote file path to read"),
+  offset: z.number().int().min(0).optional().describe("Byte offset to start reading, default 0"),
+  limit: z.number().int().min(1).max(25000).optional().describe("Maximum bytes to read, default 25000"),
+  encoding: z.enum(["utf8", "base64"]).optional().describe("utf8 or base64, default utf8"),
   ...SftpTimeoutField,
 });
 
 // SFTP 写入文件参数 Schema
 export const SftpWriteParamsSchema = z.object({
-  session_id: z.string().optional(),
-  path: z.string().min(1, "path is required"),
-  content: z.string(),
+  session_id: sessionIdField,
+  path: z.string().min(1, "path is required").describe("Remote file path to write"),
+  content: z.string().describe("Content to write to the file"),
   ...SftpTimeoutField,
 });
 
 // SFTP 删除参数 Schema
 export const SftpDeleteParamsSchema = z.object({
-  session_id: z.string().optional(),
-  path: z.string().min(1, "path is required"),
-  recursive: z.boolean().default(false),
+  session_id: sessionIdField,
+  path: z.string().min(1, "path is required").describe("Remote path to delete"),
   ...SftpTimeoutField,
 });
 
 // SFTP 创建目录参数 Schema
 export const SftpMkdirParamsSchema = z.object({
-  session_id: z.string().optional(),
-  path: z.string().min(1, "path is required"),
+  session_id: sessionIdField,
+  path: z.string().min(1, "path is required").describe("Remote directory path to create"),
   ...SftpTimeoutField,
 });
 
 // SFTP 重命名参数 Schema
 export const SftpRenameParamsSchema = z.object({
-  session_id: z.string().optional(),
-  old_path: z.string().min(1, "old_path is required"),
-  new_path: z.string().min(1, "new_path is required"),
+  session_id: sessionIdField,
+  old_path: z.string().min(1, "old_path is required").describe("Current path of the file/directory"),
+  new_path: z.string().min(1, "new_path is required").describe("New path for the file/directory"),
   ...SftpTimeoutField,
 });
 
@@ -146,18 +146,10 @@ export type SftpRenameParams = z.infer<typeof SftpRenameParamsSchema>;
 
 // 连接结果
 export interface ConnectResult {
-  session_id: string;
+  session_id: SessionId;
   message: string;
   host_fingerprint: string;
   host_key_type: string;
-}
-
-// 执行结果
-export interface ExecResult {
-  stdout: string;
-  stderr: string;
-  exit_code: number | null;
-  truncated: boolean;
 }
 
 export interface BackgroundExecResult {
@@ -189,7 +181,7 @@ interface ExecJob {
 // 列表结果
 export interface ListSessionsResult {
   sessions: Array<{
-    session_id: string;
+    session_id: SessionId;
     host: string;
     port: number;
     username: string;
@@ -214,11 +206,11 @@ const DEFAULT_SESSION_ID = "__default__";
  */
 export class SshToolHandlers {
   private registry: SessionRegistry;
-  private clients: Map<string, SshClient> = new Map();
-  private sftpClients: Map<string, SftpClient> = new Map();
+  private clients: Map<SessionId, SshClient> = new Map();
+  private sftpClients: Map<SessionId, SftpClient> = new Map();
   private jobs: Map<string, ExecJob> = new Map();
   private globalConfig: GlobalConfig;
-  private defaultSessionId: string | null = null;
+  private defaultSessionId: SessionId | null = null;
 
   constructor(config: GlobalConfig = {}) {
     this.registry = new SessionRegistry();
@@ -260,7 +252,7 @@ export class SshToolHandlers {
    * 获取有效的会话 ID
    * 如果未提供 session_id，则使用默认会话
    */
-  private getEffectiveSessionId(sessionId?: string): string {
+  private getEffectiveSessionId(sessionId?: SessionId): SessionId {
     if (sessionId) {
       return sessionId;
     }
@@ -311,7 +303,7 @@ export class SshToolHandlers {
    * 清理指定会话的 SFTP 客户端缓存
    * 在连接断开或重连后调用
    */
-  invalidateSftpClient(sessionId: string): void {
+  invalidateSftpClient(sessionId: SessionId): void {
     const sftpClient = this.sftpClients.get(sessionId);
     if (sftpClient) {
       try {
@@ -326,7 +318,7 @@ export class SshToolHandlers {
   /**
    * 确保连接存活，必要时自动重连
    */
-  private async ensureConnected(sessionId: string): Promise<void> {
+  private async ensureConnected(sessionId: SessionId): Promise<void> {
     const client = this.clients.get(sessionId);
     if (!client) {
       throw new Error(`Client not found for session: ${sessionId}`);
@@ -345,7 +337,7 @@ export class SshToolHandlers {
    * 连接断开时自动重连，操作失败时按指数退避重试
    */
   private async withAutoReconnect<T>(
-    sessionId: string,
+    sessionId: SessionId,
     operation: () => Promise<T>
   ): Promise<T> {
     const maxAttempts = this.globalConfig.maxReconnectAttempts ?? DEFAULT_MAX_RECONNECT_ATTEMPTS;
@@ -369,7 +361,7 @@ export class SshToolHandlers {
   /**
    * 获取或创建 SFTP 客户端
    */
-  private async getSftpClient(sessionId: string): Promise<SftpClient> {
+  private async getSftpClient(sessionId: SessionId): Promise<SftpClient> {
     // 先确保 SSH 连接存活
     await this.ensureConnected(sessionId);
 
@@ -395,7 +387,7 @@ export class SshToolHandlers {
   /**
    * 执行 SFTP 操作。超时或取消后丢掉当前 SFTP 会话，下次重新打开。
    */
-  private async performSftp<T>(sessionId: string, run: (sftp: SftpClient) => Promise<T>): Promise<T> {
+  private async performSftp<T>(sessionId: SessionId, run: (sftp: SftpClient) => Promise<T>): Promise<T> {
     try {
       return await this.withAutoReconnect(sessionId, async () => {
         const sftp = await this.getSftpClient(sessionId);
@@ -408,6 +400,21 @@ export class SshToolHandlers {
       }
       throw err;
     }
+  }
+
+  /**
+   * SFTP 工具公共流程：取会话、刷新使用时间、执行操作并套用重连重试。
+   */
+  private async runSftpOperation<T>(
+    sessionId: SessionId | undefined,
+    timeout: number | undefined,
+    signal: AbortSignal | undefined,
+    run: (sftp: SftpClient, call: { timeout?: number; signal?: AbortSignal }) => Promise<T>
+  ): Promise<T> {
+    const effectiveSessionId = this.getEffectiveSessionId(sessionId);
+    this.registry.touchSession(effectiveSessionId);
+    const call = { timeout, signal };
+    return this.performSftp(effectiveSessionId, (sftp) => run(sftp, call));
   }
 
   /**
@@ -430,8 +437,8 @@ export class SshToolHandlers {
       privateKey: validated.private_key,
       privateKeyPath: validated.private_key_path,
       passphrase: validated.passphrase,
-      timeout: validated.timeout,
-      connectTimeout: validated.connect_timeout,
+      timeout: validated.timeout ?? this.globalConfig.timeout,
+      connectTimeout: validated.connect_timeout ?? this.globalConfig.connectTimeout,
       keepaliveInterval: validated.keepalive_interval ?? this.globalConfig.keepaliveInterval,
       keepaliveCountMax: validated.keepalive_count ?? this.globalConfig.keepaliveCountMax,
       strictHostKeyChecking: validated.strict_host_key_checking ?? this.globalConfig.strictHostKeyChecking,
@@ -453,7 +460,6 @@ export class SshToolHandlers {
       host: validated.host,
       port: validated.port,
       username: validated.username,
-      client: client.getClient(),
     });
 
     // 保存客户端实例
@@ -499,13 +505,7 @@ export class SshToolHandlers {
       if (!client) {
         throw new Error(`Client not found for session: ${sessionId}`);
       }
-      const result = await client.execCommand(command, validated.timeout, signal);
-      return {
-        stdout: result.stdout,
-        stderr: result.stderr,
-        exit_code: result.exitCode,
-        truncated: result.truncated,
-      };
+      return client.execCommand(command, validated.timeout, signal);
     });
   }
 
@@ -513,7 +513,7 @@ export class SshToolHandlers {
    * 后台命令立即返回。输出保存在进程内，服务重启后任务消失。
    */
   private startBackground(
-    sessionId: string,
+    sessionId: SessionId,
     command: string,
     timeout: number | undefined,
     signal?: AbortSignal
@@ -547,7 +547,7 @@ export class SshToolHandlers {
       (result) => {
         if (job.status !== "running") return;
         job.status = "exited";
-        job.exitCode = result.exitCode;
+        job.exitCode = result.exit_code;
         job.truncated = job.truncated || result.truncated;
       },
       () => {
@@ -557,6 +557,7 @@ export class SshToolHandlers {
     return { background: true, job_id: job.id, status: "running" };
   }
 
+  /** 读取后台任务的当前输出和状态。 */
   async pollExec(params: z.infer<typeof PollExecParamsSchema>): Promise<ExecJobView> {
     const validated = PollExecParamsSchema.parse(params);
     const job = this.jobs.get(validated.job_id);
@@ -573,6 +574,7 @@ export class SshToolHandlers {
     };
   }
 
+  /** 关闭后台任务的执行通道。已脱离会话的远端进程不保证停止。 */
   async cancelExec(params: z.infer<typeof CancelExecParamsSchema>): Promise<{ job_id: string; status: ExecJob["status"] }> {
     const validated = CancelExecParamsSchema.parse(params);
     const job = this.jobs.get(validated.job_id);
@@ -659,12 +661,8 @@ export class SshToolHandlers {
    */
   async sftpList(params: SftpListParams, signal?: AbortSignal) {
     const validated = SftpListParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, (sftp) => sftp.listDirectory(validated.path, {
-      timeout: validated.timeout,
-      signal,
-    }));
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      (sftp, call) => sftp.listDirectory(validated.path, call));
   }
 
   /**
@@ -672,12 +670,8 @@ export class SshToolHandlers {
    */
   async sftpUpload(params: SftpUploadParams, signal?: AbortSignal) {
     const validated = SftpUploadParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, (sftp) => sftp.uploadFile(validated.local_path, validated.remote_path, {
-      timeout: validated.timeout,
-      signal,
-    }));
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      (sftp, call) => sftp.uploadFile(validated.local_path, validated.remote_path, call));
   }
 
   /**
@@ -685,12 +679,8 @@ export class SshToolHandlers {
    */
   async sftpDownload(params: SftpDownloadParams, signal?: AbortSignal) {
     const validated = SftpDownloadParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, (sftp) => sftp.downloadFile(validated.remote_path, validated.local_path, {
-      timeout: validated.timeout,
-      signal,
-    }));
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      (sftp, call) => sftp.downloadFile(validated.remote_path, validated.local_path, call));
   }
 
   /**
@@ -698,27 +688,25 @@ export class SshToolHandlers {
    */
   async sftpRead(params: SftpReadParams, signal?: AbortSignal) {
     const validated = SftpReadParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, async (sftp) => {
-      const result = await sftp.readFile(validated.path, {
-        offset: validated.offset,
-        limit: validated.limit,
-        encoding: validated.encoding,
-        timeout: validated.timeout,
-        signal,
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      async (sftp, call) => {
+        const result = await sftp.readFile(validated.path, {
+          ...call,
+          offset: validated.offset,
+          limit: validated.limit,
+          encoding: validated.encoding,
+        });
+        return {
+          path: result.path,
+          content: result.content,
+          size: result.size,
+          offset: result.offset,
+          bytes_read: result.bytesRead,
+          next_offset: result.nextOffset,
+          truncated: result.truncated,
+          encoding: result.encoding,
+        };
       });
-      return {
-        path: result.path,
-        content: result.content,
-        size: result.size,
-        offset: result.offset,
-        bytes_read: result.bytesRead,
-        next_offset: result.nextOffset,
-        truncated: result.truncated,
-        encoding: result.encoding,
-      };
-    });
   }
 
   /**
@@ -726,12 +714,8 @@ export class SshToolHandlers {
    */
   async sftpWrite(params: SftpWriteParams, signal?: AbortSignal) {
     const validated = SftpWriteParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, (sftp) => sftp.writeFile(validated.path, validated.content, {
-      timeout: validated.timeout,
-      signal,
-    }));
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      (sftp, call) => sftp.writeFile(validated.path, validated.content, call));
   }
 
   /**
@@ -739,19 +723,17 @@ export class SshToolHandlers {
    */
   async sftpDelete(params: SftpDeleteParams, signal?: AbortSignal) {
     const validated = SftpDeleteParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    const call = { timeout: validated.timeout, signal };
-    return this.performSftp(sessionId, async (sftp) => {
-      const stats = await sftp.stat(validated.path, call);
-      const isDirectory = (stats.mode & 0o40000) !== 0;
-      try {
-        if (isDirectory) return await sftp.deleteDirectory(validated.path, call);
-        return await sftp.deleteFile(validated.path, call);
-      } catch (err) {
-        throw markNotRetryable(err);
-      }
-    });
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      async (sftp, call) => {
+        const stats = await sftp.stat(validated.path, call);
+        try {
+          return isDirectoryMode(stats.mode)
+            ? await sftp.deleteDirectory(validated.path, call)
+            : await sftp.deleteFile(validated.path, call);
+        } catch (err) {
+          throw markNotRetryable(err);
+        }
+      });
   }
 
   /**
@@ -759,12 +741,15 @@ export class SshToolHandlers {
    */
   async sftpMkdir(params: SftpMkdirParams, signal?: AbortSignal) {
     const validated = SftpMkdirParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, (sftp) => sftp.createDirectory(validated.path, {
-      timeout: validated.timeout,
-      signal,
-    }));
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      async (sftp, call) => {
+        try {
+          return await sftp.createDirectory(validated.path, call);
+        } catch (err) {
+          // 目录可能已经在远端创建成功，重试只会得到 EEXIST。
+          throw markNotRetryable(err);
+        }
+      });
   }
 
   /**
@@ -772,32 +757,14 @@ export class SshToolHandlers {
    */
   async sftpRename(params: SftpRenameParams, signal?: AbortSignal) {
     const validated = SftpRenameParamsSchema.parse(params);
-    const sessionId = this.getEffectiveSessionId(validated.session_id);
-    this.registry.touchSession(sessionId);
-    return this.performSftp(sessionId, async (sftp) => {
-      try {
-        return await sftp.rename(validated.old_path, validated.new_path, {
-          timeout: validated.timeout,
-          signal,
-        });
-      } catch (err) {
-        throw markNotRetryable(err);
-      }
-    });
-  }
-
-  /**
-   * 获取默认会话 ID
-   */
-  getDefaultSessionId(): string | null {
-    return this.defaultSessionId;
-  }
-
-  /**
-   * 检查是否有活跃连接
-   */
-  hasActiveConnection(): boolean {
-    return this.registry.size > 0;
+    return this.runSftpOperation(validated.session_id, validated.timeout, signal,
+      async (sftp, call) => {
+        try {
+          return await sftp.rename(validated.old_path, validated.new_path, call);
+        } catch (err) {
+          throw markNotRetryable(err);
+        }
+      });
   }
 
   /**

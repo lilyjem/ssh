@@ -2,13 +2,34 @@
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
-import { z } from "zod";
-import { SshToolHandlers } from "./tools/ssh-tools.js";
+import {
+  CancelExecParamsSchema,
+  ConnectParamsSchema,
+  DisconnectParamsSchema,
+  ExecParamsSchema,
+  PollExecParamsSchema,
+  SftpDeleteParamsSchema,
+  SftpDownloadParamsSchema,
+  SftpListParamsSchema,
+  SftpMkdirParamsSchema,
+  SftpReadParamsSchema,
+  SftpRenameParamsSchema,
+  SftpUploadParamsSchema,
+  SftpWriteParamsSchema,
+  SshToolHandlers,
+} from "./tools/ssh-tools.js";
 import { loadConfigFromEnv, hasPresetServer, validateServerConfig } from "./config.js";
+import { log } from "./utils/log.js";
 
-// 日志输出到 stderr，避免干扰 MCP 协议通信
-function log(message: string): void {
-  console.error(`[SSH-MCP] ${new Date().toISOString()} ${message}`);
+/** MCP 工具的错误返回，统一格式。 */
+function toolError(err: unknown): {
+  content: Array<{ type: "text"; text: string }>;
+  isError: true;
+} {
+  return {
+    content: [{ type: "text", text: `Error: ${(err as Error).message}` }],
+    isError: true,
+  };
 }
 
 // 加载配置
@@ -29,22 +50,7 @@ const handlers = new SshToolHandlers(globalConfig);
 server.tool(
   "ssh_connect",
   "Create a new SSH connection to a remote server. Returns a session_id and the accepted host key fingerprint. Host keys are checked against known_hosts (default accept-new: remember a new key, reject a changed key). If server is pre-configured via environment variables, this is optional.",
-  {
-    host: z.string().describe("Remote server hostname or IP address"),
-    port: z.number().int().min(1).max(65535).default(22).describe("SSH port (default: 22)"),
-    username: z.string().describe("SSH username"),
-    password: z.string().optional().describe("Password for authentication"),
-    private_key: z.string().optional().describe("Private key content (PEM format)"),
-    private_key_path: z.string().optional().describe("Path to private key file"),
-    passphrase: z.string().optional().describe("Passphrase for encrypted private key"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Command execution timeout in ms (default: 30000)"),
-    connect_timeout: z.number().int().min(1000).max(60000).optional().describe("Connection timeout in ms (default: 10000)"),
-    keepalive_interval: z.number().int().min(0).optional().describe("Keepalive interval in ms (default: 10000, 0 to disable)"),
-    keepalive_count: z.number().int().min(1).optional().describe("Max keepalive failures before disconnect (default: 3)"),
-    strict_host_key_checking: z.enum(["yes", "accept-new", "no"]).optional().describe("Host key policy. accept-new records unseen keys and rejects changed keys. yes rejects unseen keys. no skips known_hosts."),
-    known_hosts_path: z.string().optional().describe("known_hosts file. Defaults to ~/.ssh/known_hosts"),
-    host_fingerprint: z.string().optional().describe("Required SHA256 host key fingerprint, for example SHA256:abc..."),
-  },
+  ConnectParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Connecting to ${params.username}@${params.host}:${params.port}`);
@@ -57,10 +63,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Connection failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -69,12 +72,7 @@ server.tool(
 server.tool(
   "ssh_exec",
   "Execute a command on a connected SSH session. Returns stdout, stderr, and exit code. timeout applies to this call only; on timeout the execution channel is closed and the command is not run again. Set background=true to return a job_id immediately, then use ssh_exec_poll and ssh_exec_cancel. If session_id is omitted, uses the default pre-configured session.",
-  {
-    session_id: z.string().optional().describe("Session ID from ssh_connect (optional if using pre-configured server)"),
-    command: z.string().describe("Command to execute on the remote server"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Override command timeout in ms. For background jobs this is optional; omit it to keep the command running until it exits or is cancelled."),
-    background: z.boolean().optional().describe("Return immediately and keep the command running as a job"),
-  },
+  ExecParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Executing command: ${params.command.slice(0, 50)}...`);
@@ -119,10 +117,7 @@ server.tool(
 server.tool(
   "ssh_exec_poll",
   "Read the current output and status of a background command started with ssh_exec background=true.",
-  {
-    job_id: z.string().describe("Job ID returned by ssh_exec"),
-    stdout_offset: z.number().int().min(0).optional().describe("Return stdout starting at this character offset"),
-  },
+  PollExecParamsSchema.shape,
   async (params, extra) => {
     try {
       const result = await handlers.pollExec(params);
@@ -133,7 +128,7 @@ server.tool(
       return { content: [{ type: "text" as const, text: output }] };
     } catch (err) {
       const message = (err as Error).message;
-      return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
+      return toolError(err);
     }
   }
 );
@@ -141,9 +136,7 @@ server.tool(
 server.tool(
   "ssh_exec_cancel",
   "Close the execution channel of a background command. This does not guarantee a detached remote process has stopped.",
-  {
-    job_id: z.string().describe("Job ID returned by ssh_exec"),
-  },
+  CancelExecParamsSchema.shape,
   async (params, extra) => {
     try {
       const result = await handlers.cancelExec(params);
@@ -152,7 +145,7 @@ server.tool(
       };
     } catch (err) {
       const message = (err as Error).message;
-      return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
+      return toolError(err);
     }
   }
 );
@@ -179,10 +172,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`List sessions failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -191,9 +181,7 @@ server.tool(
 server.tool(
   "ssh_disconnect",
   "Disconnect an SSH session and release resources. If session_id is omitted, disconnects the default session.",
-  {
-    session_id: z.string().optional().describe("Session ID to disconnect (optional if using pre-configured server)"),
-  },
+  DisconnectParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Disconnecting session`);
@@ -206,10 +194,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Disconnect failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -220,11 +205,7 @@ server.tool(
 server.tool(
   "sftp_list",
   "List files and directories in a remote path. Returns file names, sizes, permissions, and modification times.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    path: z.string().default("/").describe("Remote directory path to list (default: /)"),
-  },
+  SftpListParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Listing directory: ${params.path}`);
@@ -247,10 +228,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`List failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -259,12 +237,7 @@ server.tool(
 server.tool(
   "sftp_upload",
   "Upload a local file to the remote server.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    local_path: z.string().describe("Local file path to upload"),
-    remote_path: z.string().describe("Remote destination path"),
-  },
+  SftpUploadParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Uploading: ${params.local_path} -> ${params.remote_path}`);
@@ -277,10 +250,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Upload failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -289,12 +259,7 @@ server.tool(
 server.tool(
   "sftp_download",
   "Download a file from the remote server to local.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    remote_path: z.string().describe("Remote file path to download"),
-    local_path: z.string().describe("Local destination path"),
-  },
+  SftpDownloadParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Downloading: ${params.remote_path} -> ${params.local_path}`);
@@ -307,10 +272,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Download failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -319,14 +281,7 @@ server.tool(
 server.tool(
   "sftp_read",
   "Read part of a remote file. Use offset and next_offset to page through it. encoding=utf8 avoids splitting a character; encoding=base64 returns exact bytes.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    path: z.string().describe("Remote file path to read"),
-    offset: z.number().int().min(0).optional().describe("Byte offset to start reading, default 0"),
-    limit: z.number().int().min(1).max(25000).optional().describe("Maximum bytes to read, default 25000"),
-    encoding: z.enum(["utf8", "base64"]).optional().describe("utf8 or base64, default utf8"),
-  },
+  SftpReadParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Reading file: ${params.path}`);
@@ -345,10 +300,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Read failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -357,12 +309,7 @@ server.tool(
 server.tool(
   "sftp_write",
   "Write content to a remote file. Creates the file if it doesn't exist, overwrites if it does.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    path: z.string().describe("Remote file path to write"),
-    content: z.string().describe("Content to write to the file"),
-  },
+  SftpWriteParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Writing file: ${params.path}`);
@@ -375,10 +322,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Write failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -387,12 +331,7 @@ server.tool(
 server.tool(
   "sftp_delete",
   "Delete a file or empty directory on the remote server.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    path: z.string().describe("Remote path to delete"),
-    recursive: z.boolean().default(false).describe("Recursively delete directory contents (not yet implemented)"),
-  },
+  SftpDeleteParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Deleting: ${params.path}`);
@@ -405,10 +344,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Delete failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -417,11 +353,7 @@ server.tool(
 server.tool(
   "sftp_mkdir",
   "Create a directory on the remote server.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    path: z.string().describe("Remote directory path to create"),
-  },
+  SftpMkdirParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Creating directory: ${params.path}`);
@@ -434,10 +366,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Mkdir failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -446,12 +375,7 @@ server.tool(
 server.tool(
   "sftp_rename",
   "Rename or move a file/directory on the remote server.",
-  {
-    session_id: z.string().optional().describe("Session ID (optional if using pre-configured server)"),
-    timeout: z.number().int().min(1000).max(300000).optional().describe("Abort this SFTP operation if it makes no progress for this many milliseconds"),
-    old_path: z.string().describe("Current path of the file/directory"),
-    new_path: z.string().describe("New path for the file/directory"),
-  },
+  SftpRenameParamsSchema.shape,
   async (params, extra) => {
     try {
       log(`Renaming: ${params.old_path} -> ${params.new_path}`);
@@ -464,10 +388,7 @@ server.tool(
     } catch (err) {
       const message = (err as Error).message;
       log(`Rename failed: ${message}`);
-      return {
-        content: [{ type: "text" as const, text: `Error: ${message}` }],
-        isError: true,
-      };
+      return toolError(err);
     }
   }
 );
@@ -507,8 +428,11 @@ async function main(): Promise<void> {
 
   log("SSH MCP Server is running");
 
-  // 处理进程退出信号
+  // 处理进程退出信号和客户端正常关闭 stdin
+  let shuttingDown = false;
   const cleanup = async () => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     log("Shutting down...");
     await handlers.cleanup();
     log("Cleanup complete");
@@ -517,6 +441,13 @@ async function main(): Promise<void> {
 
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
+  process.stdin.on("end", () => { void cleanup(); });
+
+  const notifyClose = transport.onclose;
+  transport.onclose = () => {
+    notifyClose?.();
+    void cleanup();
+  };
 }
 
 // 运行主函数

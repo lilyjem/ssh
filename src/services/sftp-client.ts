@@ -3,7 +3,7 @@ import type { Client, SFTPWrapper } from "ssh2";
 import { constants as fsConstants, createReadStream, createWriteStream, renameSync, statSync, unlinkSync } from "fs";
 import { basename } from "path";
 import { CHARACTER_LIMIT, DEFAULT_SFTP_TIMEOUT } from "../constants.js";
-import { SshOperationError } from "../utils/errors.js";
+import { markNotRetryable, SshOperationError } from "../utils/errors.js";
 import { expandHomePath } from "../utils/path.js";
 import { completeUtf8Length } from "../utils/utf8.js";
 
@@ -18,7 +18,7 @@ export interface ReadFileOptions extends SftpCallOptions {
   encoding?: "utf8" | "base64";
 }
 
-function isDirectoryMode(mode: number): boolean {
+export function isDirectoryMode(mode: number): boolean {
   return (mode & fsConstants.S_IFMT) === fsConstants.S_IFDIR;
 }
 
@@ -76,8 +76,8 @@ export interface ListResult {
   count: number;
 }
 
-// 删除结果
-export interface DeleteResult {
+// 路径操作结果（删除、创建目录、重命名）
+export interface PathResult {
   success: boolean;
   path: string;
   message: string;
@@ -207,33 +207,44 @@ export class SftpClient {
   }
 
   /**
-   * 列出远程目录内容
-   * @param remotePath 远程目录路径
+   * 统一处理超时、取消和只结算一次。onDeadline 负责清理本次操作创建的流。
    */
-  async listDirectory(remotePath: string, options?: SftpCallOptions): Promise<ListResult> {
-    const sftp = this.ensureSftp();
-
+  private startCall<T>(
+    options: SftpCallOptions | undefined,
+    onDeadline: () => void,
+    run: (finish: (err?: Error, value?: T) => void, bump: () => void) => void
+  ): Promise<T> {
     return new Promise((resolve, reject) => {
       let settled = false;
-      const finish = (err?: Error, value?: ListResult) => {
+      const finish = (err?: Error, value?: T) => {
         if (settled) return;
         settled = true;
         deadline.stop();
         if (err) reject(err);
-        else resolve(value as ListResult);
+        else resolve(value as T);
       };
       const deadline = this.bindDeadline(options?.timeout, options?.signal, (reason) => {
-        this.close();
+        onDeadline();
         finish(this.deadlineError(reason, options?.timeout));
       });
-      sftp.readdir(remotePath, (err, list) => {
+      run(finish, deadline.bump);
+    });
+  }
+
+  /**
+   * 列出远程目录内容
+   * @param remotePath 远程目录路径
+   */
+  async listDirectory(remotePath: string, options?: SftpCallOptions): Promise<ListResult> {
+    return this.startCall(options, () => this.close(), (finish) => {
+      this.ensureSftp().readdir(remotePath, (err, list) => {
         if (err) {
           finish(new Error(`Failed to list directory: ${err.message}`));
           return;
         }
 
         const files: FileInfo[] = list.map((item) => {
-          const isDirectory = (item.attrs.mode & 0o40000) !== 0;
+          const isDirectory = isDirectoryMode(item.attrs.mode);
           const isFile = (item.attrs.mode & 0o100000) !== 0;
 
           return {
@@ -305,7 +316,8 @@ export class SftpClient {
       };
     } catch (err) {
       await this.tryUnlink(partPath);
-      throw err;
+      // 写入已经开始，重放会在远端再写一份或留下临时文件。
+      throw markNotRetryable(err);
     }
   }
 
@@ -371,28 +383,17 @@ export class SftpClient {
       };
     }
 
-    const sftp = this.ensureSftp();
     const end = Math.min(stats.size, offset + limit) - 1;
-    return new Promise((resolve, reject) => {
+    let readStream: ReturnType<SFTPWrapper["createReadStream"]> | undefined;
+    return this.startCall<ReadFileResult>(options, () => {
+      readStream?.destroy();
+      this.close();
+    }, (finish, bump) => {
       const chunks: Buffer[] = [];
-      let settled = false;
-      let readStream: ReturnType<SFTPWrapper["createReadStream"]> | undefined;
-      const finish = (err?: Error, value?: ReadFileResult) => {
-        if (settled) return;
-        settled = true;
-        deadline.stop();
-        if (err) reject(err);
-        else resolve(value as ReadFileResult);
-      };
-      const deadline = this.bindDeadline(options?.timeout, options?.signal, (reason) => {
-        readStream?.destroy();
-        this.close();
-        finish(this.deadlineError(reason, options?.timeout));
-      });
-      readStream = sftp.createReadStream(remotePath, { start: offset, end });
+      readStream = this.ensureSftp().createReadStream(remotePath, { start: offset, end });
       readStream.on("data", (chunk: Buffer) => {
         chunks.push(chunk);
-        deadline.bump();
+        bump();
       });
       readStream.on("end", () => {
         const raw = Buffer.concat(chunks);
@@ -441,7 +442,8 @@ export class SftpClient {
       };
     } catch (err) {
       await this.tryUnlink(partPath);
-      throw err;
+      // 写入已经开始，重放会重复执行写操作。
+      throw markNotRetryable(err);
     }
   }
 
@@ -449,7 +451,7 @@ export class SftpClient {
    * 删除远程文件
    * @param remotePath 远程文件路径
    */
-  async deleteFile(remotePath: string, options?: SftpCallOptions): Promise<DeleteResult> {
+  async deleteFile(remotePath: string, options?: SftpCallOptions): Promise<PathResult> {
     return this.request(options, (sftp, done) => {
       sftp.unlink(remotePath, (err) => {
         if (err) done(new Error(`Failed to delete file: ${err.message}`));
@@ -462,7 +464,7 @@ export class SftpClient {
    * 删除远程目录（必须为空）
    * @param remotePath 远程目录路径
    */
-  async deleteDirectory(remotePath: string, options?: SftpCallOptions): Promise<DeleteResult> {
+  async deleteDirectory(remotePath: string, options?: SftpCallOptions): Promise<PathResult> {
     return this.request(options, (sftp, done) => {
       sftp.rmdir(remotePath, (err) => {
         if (err) done(new Error(`Failed to delete directory: ${err.message}`));
@@ -479,7 +481,7 @@ export class SftpClient {
    * 创建远程目录
    * @param remotePath 远程目录路径
    */
-  async createDirectory(remotePath: string, options?: SftpCallOptions): Promise<DeleteResult> {
+  async createDirectory(remotePath: string, options?: SftpCallOptions): Promise<PathResult> {
     return this.request(options, (sftp, done) => {
       sftp.mkdir(remotePath, (err) => {
         if (err) done(new Error(`Failed to create directory: ${err.message}`));
@@ -506,24 +508,11 @@ export class SftpClient {
   }
 
   /**
-   * 检查远程路径是否存在
-   * @param remotePath 远程路径
-   */
-  async exists(remotePath: string): Promise<boolean> {
-    try {
-      await this.stat(remotePath);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-
-  /**
    * 重命名/移动远程文件
    * @param oldPath 原路径
    * @param newPath 新路径
    */
-  async rename(oldPath: string, newPath: string, options?: SftpCallOptions): Promise<DeleteResult> {
+  async rename(oldPath: string, newPath: string, options?: SftpCallOptions): Promise<PathResult> {
     return this.request(options, (sftp, done) => {
       sftp.rename(oldPath, newPath, (err) => {
         if (err) done(new Error(`Failed to rename: ${err.message}`));
@@ -540,21 +529,8 @@ export class SftpClient {
     options: SftpCallOptions | undefined,
     run: (sftp: SFTPWrapper, done: (err?: Error, value?: T) => void) => void
   ): Promise<T> {
-    const sftp = this.ensureSftp();
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const finish = (err?: Error, value?: T) => {
-        if (settled) return;
-        settled = true;
-        deadline.stop();
-        if (err) reject(err);
-        else resolve(value as T);
-      };
-      const deadline = this.bindDeadline(options?.timeout, options?.signal, (reason) => {
-        this.close();
-        finish(this.deadlineError(reason, options?.timeout));
-      });
-      run(sftp, finish);
+    return this.startCall(options, () => this.close(), (finish) => {
+      run(this.ensureSftp(), finish);
     });
   }
 
@@ -588,30 +564,20 @@ export class SftpClient {
   }
 
   private pipeLocalToRemote(localPath: string, remotePart: string, options?: SftpCallOptions): Promise<void> {
-    const sftp = this.ensureSftp();
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const readStream = createReadStream(localPath);
-      const writeStream = sftp.createWriteStream(remotePart);
-      const finish = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        deadline.stop();
-        if (err) reject(err);
-        else resolve();
-      };
-      const deadline = this.bindDeadline(options?.timeout, options?.signal, (reason) => {
-        readStream.destroy();
-        writeStream.destroy();
-        this.close();
-        finish(this.deadlineError(reason, options?.timeout));
-      });
+    const readStream = createReadStream(localPath);
+    let writeStream: ReturnType<SFTPWrapper["createWriteStream"]> | undefined;
+    return this.startCall<void>(options, () => {
+      readStream.destroy();
+      writeStream?.destroy();
+      this.close();
+    }, (finish, bump) => {
+      writeStream = this.ensureSftp().createWriteStream(remotePart);
       const fail = (err: Error) => {
         readStream.destroy();
-        writeStream.destroy();
+        writeStream?.destroy();
         finish(err);
       };
-      readStream.on("data", () => deadline.bump());
+      readStream.on("data", () => bump());
       readStream.on("error", (err: Error) => fail(new Error(`Failed to read local file: ${err.message}`)));
       writeStream.on("error", (err: Error) => fail(new Error(`Upload failed: ${err.message}`)));
       writeStream.on("close", () => finish());
@@ -620,30 +586,20 @@ export class SftpClient {
   }
 
   private pipeRemoteToLocal(remotePath: string, localPart: string, options?: SftpCallOptions): Promise<void> {
-    const sftp = this.ensureSftp();
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      const readStream = sftp.createReadStream(remotePath);
-      const writeStream = createWriteStream(localPart);
-      const finish = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        deadline.stop();
-        if (err) reject(err);
-        else resolve();
-      };
-      const deadline = this.bindDeadline(options?.timeout, options?.signal, (reason) => {
-        readStream.destroy();
-        writeStream.destroy();
-        this.close();
-        finish(this.deadlineError(reason, options?.timeout));
-      });
+    let readStream: ReturnType<SFTPWrapper["createReadStream"]> | undefined;
+    const writeStream = createWriteStream(localPart);
+    return this.startCall<void>(options, () => {
+      readStream?.destroy();
+      writeStream.destroy();
+      this.close();
+    }, (finish, bump) => {
+      readStream = this.ensureSftp().createReadStream(remotePath);
       const fail = (err: Error) => {
-        readStream.destroy();
+        readStream?.destroy();
         writeStream.destroy();
         finish(err);
       };
-      readStream.on("data", () => deadline.bump());
+      readStream.on("data", () => bump());
       readStream.on("error", (err: Error) => fail(new Error(`Download failed: ${err.message}`)));
       writeStream.on("error", (err: Error) => fail(new Error(`Failed to write local file: ${err.message}`)));
       writeStream.on("close", () => finish());
@@ -652,23 +608,12 @@ export class SftpClient {
   }
 
   private writeRemoteBuffer(remotePart: string, buffer: Buffer, options?: SftpCallOptions): Promise<void> {
-    const sftp = this.ensureSftp();
-    return new Promise((resolve, reject) => {
-      let settled = false;
-      let writeStream: ReturnType<SFTPWrapper["createWriteStream"]> | undefined;
-      const finish = (err?: Error) => {
-        if (settled) return;
-        settled = true;
-        deadline.stop();
-        if (err) reject(err);
-        else resolve();
-      };
-      const deadline = this.bindDeadline(options?.timeout, options?.signal, (reason) => {
-        writeStream?.destroy();
-        this.close();
-        finish(this.deadlineError(reason, options?.timeout));
-      });
-      writeStream = sftp.createWriteStream(remotePart);
+    let writeStream: ReturnType<SFTPWrapper["createWriteStream"]> | undefined;
+    return this.startCall<void>(options, () => {
+      writeStream?.destroy();
+      this.close();
+    }, (finish) => {
+      writeStream = this.ensureSftp().createWriteStream(remotePart);
       writeStream.on("error", (err: Error) => {
         writeStream?.destroy();
         finish(new Error(`Failed to write file: ${err.message}`));

@@ -4,7 +4,7 @@ export type SessionId = string;
 export interface ExecResult {
   stdout: string;
   stderr: string;
-  exitCode: number | null;
+  exit_code: number | null;
   truncated: boolean;
 }
 

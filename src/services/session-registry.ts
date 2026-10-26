@@ -1,24 +1,18 @@
 import { randomUUID } from "crypto";
 import type { SessionId, SessionInfo } from "../types.js";
-import type { Client } from "ssh2";
 
-// 会话记录，包含连接信息和 SSH 客户端实例
-export interface SessionRecord {
-  sessionId: SessionId;
+// 连接目标的三元组，会话记录和创建参数共用
+export interface SessionEndpoint {
   host: string;
   port: number;
   username: string;
-  client: Client | unknown; // 允许测试时传入 mock 对象
-  createdAt: Date;
-  lastUsedAt: Date | null;
 }
 
-// 创建会话所需的参数
-export interface CreateSessionParams {
-  host: string;
-  port: number;
-  username: string;
-  client: Client | unknown;
+// 会话记录
+export interface SessionRecord extends SessionEndpoint {
+  sessionId: SessionId;
+  createdAt: Date;
+  lastUsedAt: Date | null;
 }
 
 /**
@@ -34,7 +28,7 @@ export class SessionRegistry {
    * @param params 会话参数（host、port、username、client）
    * @returns 创建的会话记录
    */
-  createSession(params: CreateSessionParams): SessionRecord {
+  createSession(params: SessionEndpoint): SessionRecord {
     const sessionId = randomUUID();
     const now = new Date();
 
@@ -43,7 +37,6 @@ export class SessionRegistry {
       host: params.host,
       port: params.port,
       username: params.username,
-      client: params.client,
       createdAt: now,
       lastUsedAt: null,
     };

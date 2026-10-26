@@ -31,6 +31,7 @@ export function fingerprintHostKey(key: Buffer): string {
   return `SHA256:${encoded}`;
 }
 
+/** 默认 known_hosts 路径：~/.ssh/known_hosts。 */
 export function defaultKnownHostsPath(): string {
   return join(homedir(), ".ssh", "known_hosts");
 }
@@ -41,10 +42,12 @@ export function hostToken(host: string, port: number): string {
   return `[${host}]:${port}`;
 }
 
+/** 生成一行 known_hosts 记录。 */
 export function formatKnownHostLine(host: string, port: number, key: Buffer): string {
   return `${hostToken(host, port)} ${readKeyType(key)} ${key.toString("base64")}`;
 }
 
+/** 读取 known_hosts 内容；文件不存在时返回空字符串。 */
 export function readKnownHosts(filePath: string): string {
   const expanded = expandHomePath(filePath);
   if (!existsSync(expanded)) return "";
@@ -64,6 +67,7 @@ export function recordKnownHost(filePath: string, line: string): void {
   chmodSync(expanded, 0o600);
 }
 
+/** 根据策略、known_hosts 和固定指纹决定是否接受本次主机密钥。 */
 export function decideHostKey(options: {
   key: Buffer;
   host: string;

@@ -66,17 +66,16 @@ export function loadConfigFromEnv(): GlobalConfig {
       config.server.password = process.env.SSH_PASSWORD;
     }
 
-    // 私钥认证（Base64 编码的私钥内容）
+    // 私钥认证：既接受原始 PEM，也接受 Base64 编码后的 PEM。
     if (process.env.SSH_PRIVATE_KEY) {
-      try {
-        config.server.privateKey = Buffer.from(
-          process.env.SSH_PRIVATE_KEY,
-          "base64"
-        ).toString("utf-8");
-      } catch {
-        // 如果不是 Base64，直接使用原始值
-        config.server.privateKey = process.env.SSH_PRIVATE_KEY;
+      const value = process.env.SSH_PRIVATE_KEY;
+      const decoded = value.includes("-----BEGIN")
+        ? value
+        : Buffer.from(value, "base64").toString("utf-8");
+      if (!decoded.includes("-----BEGIN")) {
+        throw new Error("SSH_PRIVATE_KEY must be a PEM private key or its Base64 encoding");
       }
+      config.server.privateKey = decoded;
     }
 
     // 私钥文件路径

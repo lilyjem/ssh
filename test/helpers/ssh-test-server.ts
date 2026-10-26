@@ -20,6 +20,13 @@ export interface MemorySftp {
   holdStat: boolean;
   holdRead: boolean;
   removeCount: number;
+  /** 以写方式打开过的路径，用来统计写操作被重放了几次 */
+  writeOpens: string[];
+  mkdirAttempts: number;
+  /** 下一次 STAT 请求返回指定状态码，模拟写入完成后连接出错 */
+  statStatusOnce?: number;
+  /** 下一次 MKDIR 创建目录后返回指定状态码，模拟响应丢失 */
+  mkdirStatusOnce?: number;
 }
 
 export interface SshTestStats {
@@ -81,6 +88,8 @@ export async function startSshTestServer(): Promise<SshTestServer> {
     holdStat: false,
     holdRead: false,
     removeCount: 0,
+    writeOpens: [],
+    mkdirAttempts: 0,
   };
   const clients = new Set<Connection>();
   const handles = new Map<number, string>();
@@ -138,6 +147,9 @@ export async function startSshTestServer(): Promise<SshTestServer> {
             if (!writing && !sftpState.files.has(filename)) {
               sftp.status(reqid, STATUS_CODE.NO_SUCH_FILE);
               return;
+            }
+            if (writing) {
+              sftpState.writeOpens.push(filename);
             }
             if (writing && !sftpState.files.has(filename)) {
               sftpState.files.set(filename, Buffer.alloc(0));
@@ -200,6 +212,12 @@ export async function startSshTestServer(): Promise<SshTestServer> {
 
           sftp.on("STAT", (reqid, path) => {
             if (sftpState.holdStat) return;
+            if (sftpState.statStatusOnce !== undefined) {
+              const code = sftpState.statStatusOnce;
+              sftpState.statStatusOnce = undefined;
+              sftp.status(reqid, code);
+              return;
+            }
             replyStat(sftp, reqid, path, sftpState);
           });
           sftp.on("LSTAT", (reqid, path) => {
@@ -209,6 +227,22 @@ export async function startSshTestServer(): Promise<SshTestServer> {
 
           sftp.on("FSETSTAT", (reqid) => sftp.status(reqid, STATUS_CODE.OK));
           sftp.on("SETSTAT", (reqid) => sftp.status(reqid, STATUS_CODE.OK));
+
+          sftp.on("MKDIR", (reqid, path) => {
+            sftpState.mkdirAttempts += 1;
+            if (sftpState.dirs.has(path)) {
+              sftp.status(reqid, STATUS_CODE.FAILURE);
+              return;
+            }
+            sftpState.dirs.add(path);
+            if (sftpState.mkdirStatusOnce !== undefined) {
+              const code = sftpState.mkdirStatusOnce;
+              sftpState.mkdirStatusOnce = undefined;
+              sftp.status(reqid, code);
+              return;
+            }
+            sftp.status(reqid, STATUS_CODE.OK);
+          });
 
           sftp.on("REMOVE", (reqid, path) => {
             sftpState.removeCount += 1;

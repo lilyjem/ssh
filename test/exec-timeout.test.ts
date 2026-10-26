@@ -137,4 +137,31 @@ describe("ssh_exec 超时会传到真实会话", () => {
     });
     expect(result.stdout).toContain("ok:echo hi");
   });
+
+  it("ssh_connect 未传 timeout 时使用环境配置的默认值", async () => {
+    const server = await startSshTestServer();
+    closers.push(() => server.close());
+    const dir = mkdtempSync(join(tmpdir(), "ssh-mcp-timeout-default-"));
+    dirs.push(dir);
+    const handlers = new SshToolHandlers({
+      timeout: 1000,
+      connectTimeout: 3000,
+      maxReconnectAttempts: 1,
+      strictHostKeyChecking: "no",
+      knownHostsPath: join(dir, "known_hosts"),
+    });
+    const connected = await handlers.connect({
+      host: "127.0.0.1",
+      port: server.port,
+      username: TEST_USER,
+      password: TEST_PASSWORD,
+      keepalive_interval: 0,
+    });
+
+    await expect(handlers.exec({
+      session_id: connected.session_id,
+      command: "sleep",
+    })).rejects.toThrow(/Command execution timeout after 1000ms/);
+    await waitFor(() => server.stats.sleepClosed, 1000);
+  });
 });

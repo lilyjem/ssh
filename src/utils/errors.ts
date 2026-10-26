@@ -7,7 +7,6 @@ export class SshOperationError extends Error {
   commandStarted: boolean;
   timedOut: boolean;
   level?: string;
-  code?: string | number;
 
   constructor(
     message: string,
@@ -16,7 +15,6 @@ export class SshOperationError extends Error {
       commandStarted?: boolean;
       timedOut?: boolean;
       level?: string;
-      code?: string | number;
     } = {}
   ) {
     super(message);
@@ -25,7 +23,6 @@ export class SshOperationError extends Error {
     this.commandStarted = init.commandStarted ?? false;
     this.timedOut = init.timedOut ?? false;
     this.level = init.level;
-    this.code = init.code;
   }
 }
 

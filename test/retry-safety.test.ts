@@ -93,7 +93,7 @@ describe("操作层不重放非幂等动作", () => {
     client.execCommand = async () => {
       calls += 1;
       if (calls === 1) throw new Error("Not connected");
-      return { stdout: "ok", stderr: "", exitCode: 0, truncated: false };
+      return { stdout: "ok", stderr: "", exit_code: 0, truncated: false };
     };
 
     const result = await handlers.exec({ session_id: sessionId, command: "echo ok" });

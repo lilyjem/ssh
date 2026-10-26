@@ -1,6 +1,6 @@
 import { COMMAND_MAX_CHARS } from "../constants.js";
 
-// 清洗并校验命令输入
+/** 清洗并校验命令输入：去空白、拒绝空命令和超长命令。 */
 export function sanitizeCommand(command: string): string {
   if (typeof command !== "string") {
     throw new Error("command must be a string");
