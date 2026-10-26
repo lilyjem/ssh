@@ -8,6 +8,10 @@ describe("expandHomePath", () => {
     expect(expandHomePath("~/.ssh/id_rsa")).toBe(join(homedir(), ".ssh/id_rsa"));
   });
 
+  it("expands Windows-style home paths", () => {
+    expect(expandHomePath("~\\.ssh\\id_rsa")).toBe(join(homedir(), ".ssh", "id_rsa"));
+  });
+
   it("keeps non-home paths unchanged", () => {
     expect(expandHomePath("/tmp/file.txt")).toBe("/tmp/file.txt");
     expect(expandHomePath("relative/file.txt")).toBe("relative/file.txt");

@@ -1,6 +1,6 @@
 import { createHash, createHmac, randomBytes } from "crypto";
 import { mkdtempSync, readFileSync, rmSync } from "fs";
-import { tmpdir } from "os";
+import { homedir, tmpdir } from "os";
 import { join } from "path";
 import { afterEach, describe, expect, it } from "vitest";
 import {
@@ -162,7 +162,7 @@ describe("主机密钥判定", () => {
   });
 
   it("默认 known_hosts 路径指向用户 .ssh 目录", () => {
-    expect(defaultKnownHostsPath().endsWith(".ssh/known_hosts")).toBe(true);
+    expect(defaultKnownHostsPath()).toBe(join(homedir(), ".ssh", "known_hosts"));
   });
 });
 
