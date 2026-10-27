@@ -20,9 +20,36 @@ A locally running MCP (Model Context Protocol) server that securely controls rem
 
 ## Installation
 
+Requires Node.js 18+ with npm/npx. Git is only needed for source installation.
+
+### Option 1: Use the npm Package (Recommended)
+
+Available on npm as [**@lilyjem/ssh-mcp-server**](https://www.npmjs.com/package/@lilyjem/ssh-mcp-server), currently version `0.2.0`. No clone or manual build is required. Add this to your Cursor or Claude Desktop MCP configuration:
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "npx",
+      "args": ["-y", "@lilyjem/ssh-mcp-server@0.2.0"],
+      "env": {
+        "SSH_HOST": "your-server-ip",
+        "SSH_PORT": "22",
+        "SSH_USERNAME": "your-username",
+        "SSH_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+The first launch downloads the package and requires internet access. Restart the client after saving. The example pins the version to avoid automatic upgrades; change it explicitly when upgrading. You may omit `env` and let the agent call `ssh_connect` instead.
+
+### Option 2: Install from Source
+
 ```bash
 # Clone the project
-git clone https://github.com/your-name/ssh.git
+git clone https://github.com/lilyjem/ssh.git
 cd ssh
 
 # Install dependencies
@@ -33,6 +60,10 @@ npm run build
 ```
 
 ## Configuration
+
+The examples below use the locally built source entry point. For npm usage, replace `command` with `npx` and `args` with `["-y", "@lilyjem/ssh-mcp-server@0.2.0"]`, keeping the same environment variables.
+
+Default examples use username/password authentication. Replace the placeholders with your server credentials, and never commit configurations containing real passwords. Private key authentication remains available as an alternative below.
 
 ### Cursor IDE
 
@@ -129,7 +160,7 @@ Create `.mcp.json` file in project root:
       "env": {
         "SSH_HOST": "your-server-ip",
         "SSH_USERNAME": "root",
-        "SSH_PRIVATE_KEY_PATH": "~/.ssh/id_rsa"
+        "SSH_PASSWORD": "your-password"
       }
     }
   }
@@ -160,7 +191,7 @@ Edit Codex config file `~/.codex/config.json`:
 
 ### Release Installation
 
-This release is distributed from the source repository, not published to npm. Clone the repository, check out `v0.2.0` when the tag is available on the remote, run `npm ci` and `npm run build`, then configure the local `dist/index.js` path as shown above. Do not use `npx ssh` or assume the npm package with the same name belongs to this project.
+The official npm package is `@lilyjem/ssh-mcp-server`. Do not use `npx ssh` or the unscoped `ssh-mcp-server` package, which is not this project. For source installation, check out `v0.2.0`, run `npm ci` and `npm run build`, then configure the local `dist/index.js` path. The path notes below apply only to source installations.
 
 ### Path Notes
 

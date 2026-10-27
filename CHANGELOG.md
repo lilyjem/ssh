@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+### Documentation
+
+- 中英文 README 默认连接配置统一使用用户名和密码，保留私钥认证作为可选方式，并提醒不要提交真实凭据。
+- 更新中英文 README，新增已发布 npm 包 `@lilyjem/ssh-mcp-server` 的固定版本 npx 配置，保留源码安装说明。
+
 ## [0.2.0] - 2026-10-27
 
 ### Added

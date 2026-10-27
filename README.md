@@ -35,9 +35,32 @@
 
 ## 安装
 
-前置条件：Node.js 18+、Git。
+前置条件：Node.js 18+（含 npm/npx）；仅源码安装需要 Git。
 
-### 方式一：让 Agent 帮你安装（推荐）
+### 方式一：通过 npm 使用（推荐）
+
+已发布到 npm：[**@lilyjem/ssh-mcp-server**](https://www.npmjs.com/package/@lilyjem/ssh-mcp-server)，当前版本 `0.2.0`。无需克隆仓库或手动构建，在 Cursor 或 Claude Desktop 的 MCP 配置中添加：
+
+```json
+{
+  "mcpServers": {
+    "ssh": {
+      "command": "npx",
+      "args": ["-y", "@lilyjem/ssh-mcp-server@0.2.0"],
+      "env": {
+        "SSH_HOST": "your-server-ip",
+        "SSH_PORT": "22",
+        "SSH_USERNAME": "your-username",
+        "SSH_PASSWORD": "your-password"
+      }
+    }
+  }
+}
+```
+
+首次启动会自动下载 npm 包，需要联网；保存配置后重启客户端。示例固定版本以避免自动升级；升级时请显式修改版本号。也可移除 `env`，连接时由 Agent 调用 `ssh_connect`。
+
+### 方式二：让 Agent 帮你安装源码
 
 把下面这段话直接发给 Cursor、Claude Code、Claude Desktop 或 Codex 里的 Agent：
 
@@ -49,7 +72,7 @@
 
 Agent 会自己完成克隆、安装、构建和 MCP 注册。重启客户端后，MCP 服务就会加载。
 
-### 方式二：手动安装
+### 方式三：手动安装源码
 
 ```bash
 # 克隆项目
@@ -65,9 +88,11 @@ npm run build
 
 ## 配置方式
 
-下面的示例都通过环境变量预配置服务器，MCP 启动时自动连接。不写 `env` 也能用，连接时改由 Agent 调用 `ssh_connect`。
+下面的示例使用源码构建后的本地入口，通过环境变量预配置服务器，MCP 启动时自动连接。使用 npm 时，将 `command` 改为 `npx`、`args` 改为 `["-y", "@lilyjem/ssh-mcp-server@0.2.0"]`；命令行示例则将 `-- node /path/to/ssh-mcp/dist/index.js` 替换为 `-- npx -y @lilyjem/ssh-mcp-server@0.2.0`。不写 `env` 也能用，连接时改由 Agent 调用 `ssh_connect`。
 
 支持 **2 类认证、3 种传入方式**：密码认证（`SSH_PASSWORD`），或私钥认证（`SSH_PRIVATE_KEY_PATH` 指定文件、`SSH_PRIVATE_KEY` 提供原始 PEM 或其 Base64 编码）。加密私钥可通过 `SSH_PASSPHRASE` 提供口令；口令不是第三类认证。暂不支持 SSH Agent、keyboard-interactive 或 MFA。
+
+默认示例使用用户名和密码。将 `your-username`、`your-password` 替换为服务器登录凭据；请勿将含真实密码的配置提交到仓库。需要私钥认证时，将 `SSH_PASSWORD` 替换为 `SSH_PRIVATE_KEY_PATH`（如 `~/.ssh/id_rsa`），加密私钥另设 `SSH_PASSPHRASE`。
 
 路径中的 `/path/to/ssh-mcp/dist/index.js` 换成克隆后的真实路径（见「路径说明」）。
 
@@ -80,7 +105,7 @@ claude mcp add ssh -s user \
   -e SSH_HOST=your-server-ip \
   -e SSH_PORT=22 \
   -e SSH_USERNAME=your-username \
-  -e SSH_PRIVATE_KEY_PATH=~/.ssh/id_rsa \
+  -e SSH_PASSWORD=your-password \
   -- node /path/to/ssh-mcp/dist/index.js
 ```
 
@@ -96,7 +121,7 @@ claude mcp add ssh -s user \
         "SSH_HOST": "your-server-ip",
         "SSH_PORT": "22",
         "SSH_USERNAME": "your-username",
-        "SSH_PRIVATE_KEY_PATH": "~/.ssh/id_rsa"
+        "SSH_PASSWORD": "your-password"
       }
     }
   }
@@ -112,7 +137,7 @@ codex mcp add ssh \
   --env SSH_HOST=your-server-ip \
   --env SSH_PORT=22 \
   --env SSH_USERNAME=your-username \
-  --env SSH_PRIVATE_KEY_PATH=~/.ssh/id_rsa \
+  --env SSH_PASSWORD=your-password \
   -- node /path/to/ssh-mcp/dist/index.js
 ```
 
@@ -127,7 +152,7 @@ args = ["/path/to/ssh-mcp/dist/index.js"]
 SSH_HOST = "your-server-ip"
 SSH_PORT = "22"
 SSH_USERNAME = "your-username"
-SSH_PRIVATE_KEY_PATH = "~/.ssh/id_rsa"
+SSH_PASSWORD = "your-password"
 ```
 
 ### Cursor
@@ -144,7 +169,7 @@ SSH_PRIVATE_KEY_PATH = "~/.ssh/id_rsa"
         "SSH_HOST": "your-server-ip",
         "SSH_PORT": "22",
         "SSH_USERNAME": "your-username",
-        "SSH_PRIVATE_KEY_PATH": "~/.ssh/id_rsa"
+        "SSH_PASSWORD": "your-password"
       }
     }
   }
@@ -167,7 +192,7 @@ Claude Desktop 的配置格式与 Cursor 相同，文件位置为 macOS 的 `~/L
 
 ### 版本安装说明
 
-本版本通过源码仓库分发，未发布到 npm。克隆仓库后，可在远端标签可用时检出 `v0.2.0`，执行 `npm ci` 和 `npm run build`，再按上文配置本地 `dist/index.js` 路径。不要使用 `npx ssh`，也不要假定 npm 上的同名包属于本项目。
+官方 npm 包为 `@lilyjem/ssh-mcp-server`，不要使用 `npx ssh` 或未加作用域的 `ssh-mcp-server`（不属于本项目）。源码安装可检出 `v0.2.0`，执行 `npm ci` 和 `npm run build`，再配置本地 `dist/index.js` 路径；路径说明仅适用于源码安装。
 
 ## 环境变量
 
