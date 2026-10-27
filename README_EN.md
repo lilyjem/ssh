@@ -158,25 +158,9 @@ Edit Codex config file `~/.codex/config.json`:
 }
 ```
 
-### Using npx (No Clone Required)
+### Release Installation
 
-If published to npm, use npx directly:
-
-```json
-{
-  "mcpServers": {
-    "ssh": {
-      "command": "npx",
-      "args": ["ssh"],
-      "env": {
-        "SSH_HOST": "your-server-ip",
-        "SSH_USERNAME": "root",
-        "SSH_PASSWORD": "your-password"
-      }
-    }
-  }
-}
-```
+This release is distributed from the source repository, not published to npm. Clone the repository, check out `v0.2.0` when the tag is available on the remote, run `npm ci` and `npm run build`, then configure the local `dist/index.js` path as shown above. Do not use `npx ssh` or assume the npm package with the same name belongs to this project.
 
 ### Path Notes
 
@@ -187,7 +171,7 @@ Replace `/path/to/ssh/dist/index.js` with actual path:
 
 > Tip: Windows paths can use forward slashes `/` or double backslashes `\\`
 
-The client targets Windows, macOS, and Linux. The remote host must provide SSH/SFTP and interprets commands using its own system; commands are not translated between operating systems. Windows access control depends on system ACLs, not POSIX `0600` modes. These fixes are validated on macOS; Windows/Linux still need native verification.
+The client targets Windows, macOS, and Linux. The remote host must provide SSH/SFTP and interprets commands using its own system; commands are not translated between operating systems. Windows access control depends on system ACLs, not POSIX `0600` modes. The current version has been validated on macOS; Windows validation has been completed by the user. Linux remains unverified on a native machine because none is available.
 
 ## Environment Variables
 
@@ -237,6 +221,8 @@ Create a new SSH connection (optional when using pre-configured server).
 - `private_key` (string, optional): Private key content
 - `private_key_path` (string, optional): Private key file path
 - `passphrase` (string, optional): Private key passphrase
+- `timeout` (number, optional): Default command timeout in milliseconds; defaults to `SSH_TIMEOUT`
+- `connect_timeout` (number, optional): Connection timeout in milliseconds; defaults to `SSH_CONNECT_TIMEOUT`
 - `keepalive_interval` (number, optional): Keepalive probe interval (ms), default 10000
 - `keepalive_count` (number, optional): Max unresponsive probes, default 3
 - `strict_host_key_checking` (string, optional): `yes`, `accept-new`, or `no`
@@ -260,11 +246,26 @@ Execute remote command. No `session_id` needed when using pre-configured server.
 
 If a started command loses its connection before reporting an exit status, the call fails with an unknown execution outcome and is not replayed. Check the remote state before retrying.
 
-Up to 32 background jobs are retained. Terminal jobs expire lazily after 15 minutes and may be evicted earlier for capacity; when all 32 are running, new jobs are rejected. Disconnecting removes that session's jobs. Poll offsets use JavaScript UTF-16 string indexes; reuse `next_stdout_offset` unchanged.
-
 ```
 Example: ssh_exec(command="ls -la /var/log")
 ```
+
+#### ssh_exec_poll
+Read the current output and status of a background job.
+
+**Parameters:**
+- `job_id` (string, required): Job ID returned by `ssh_exec`
+- `stdout_offset` (number, optional): Starting offset for stdout
+
+Returns `status`, `exit_code`, `next_stdout_offset`, and incremental stdout / stderr.
+
+Up to 32 background jobs are retained. Terminal jobs expire lazily after 15 minutes and may be evicted earlier for capacity; when all 32 are running, new jobs are rejected. Disconnecting cancels and removes that session's jobs. Poll offsets use JavaScript UTF-16 string indexes; reuse `next_stdout_offset` unchanged.
+
+#### ssh_exec_cancel
+Close a background job's execution channel. Closing the channel does not guarantee that a detached remote process has stopped.
+
+**Parameters:**
+- `job_id` (string, required): Job ID returned by `ssh_exec`
 
 #### ssh_list_sessions
 List all active SSH sessions.
@@ -273,7 +274,7 @@ List all active SSH sessions.
 Disconnect SSH session.
 
 **Parameters:**
-- `session_id` (string, required): Session ID to disconnect
+- `session_id` (string, optional): Session ID to disconnect; omit to disconnect the pre-configured default session
 
 ### SFTP File Operations
 

@@ -38,7 +38,7 @@ const globalConfig = loadConfigFromEnv();
 // 创建 MCP 服务器实例
 const server = new McpServer({
   name: "ssh-mcp-server",
-  version: "0.1.0",
+  version: "0.2.0",
 });
 
 // 创建 SSH 工具处理器（传入全局配置）

@@ -163,7 +163,11 @@ Claude Desktop 的配置格式与 Cursor 相同，文件位置为 macOS 的 `~/L
 
 > 提示：Windows 路径可以使用正斜杠 `/` 或双反斜杠 `\\`
 
-本机运行目标为 Windows、macOS 和 Linux；远端需提供 SSH/SFTP 服务，命令按远端系统解释，不会自动转换成跨平台命令。Windows 的文件访问控制依赖系统 ACL，POSIX 的 `0600` 权限不等价于 Windows ACL。当前修复在 macOS 验证，Windows/Linux 仍需实机验证。
+本机运行目标为 Windows、macOS 和 Linux；远端需提供 SSH/SFTP 服务，命令按远端系统解释，不会自动转换成跨平台命令。Windows 的文件访问控制依赖系统 ACL，POSIX 的 `0600` 权限不等价于 Windows ACL。当前版本已在 macOS 验证，Windows 已由用户完成验证；因暂无 Linux 实机，Linux 尚未实机验证。
+
+### 版本安装说明
+
+本版本通过源码仓库分发，未发布到 npm。克隆仓库后，可在远端标签可用时检出 `v0.2.0`，执行 `npm ci` 和 `npm run build`，再按上文配置本地 `dist/index.js` 路径。不要使用 `npx ssh`，也不要假定 npm 上的同名包属于本项目。
 
 ## 环境变量
 
